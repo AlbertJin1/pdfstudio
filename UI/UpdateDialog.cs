@@ -1,0 +1,138 @@
+using PdfStudio.Services;
+
+namespace PdfStudio.UI;
+
+/// <summary>
+/// "Update available" window: shows the release notes, downloads the new version with a progress bar and reports back.
+/// It only downloads; the caller (MainForm) swaps the files and restarts, after checking for unsaved work.
+/// </summary>
+public sealed class UpdateDialog : Form
+{
+    private readonly UpdateInfo update;
+    private readonly TextBox notes = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, TabStop = false };
+    private readonly ProgressBar bar = new() { Style = ProgressBarStyle.Continuous, Minimum = 0, Maximum = 1000, Dock = DockStyle.Fill, Visible = false };
+    private readonly Txt status = new("", 8.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private readonly FlatButton skip, later, install;
+    private CancellationTokenSource? cts;
+    private bool busy;
+
+    /// <summary>True once the new exe was downloaded and verified (DownloadedPath is then set).</summary>
+    public bool Downloaded { get; private set; }
+    public string? DownloadedPath { get; private set; }
+    /// <summary>The user chose "Skip this version".</summary>
+    public bool SkipRequested { get; private set; }
+
+    private static int S(int v) => Theme.S(v);
+
+    public UpdateDialog(UpdateInfo update)
+    {
+        this.update = update;
+        AutoScaleMode = AutoScaleMode.None;          // sizes are scaled once with Theme.S
+        Text = "PDF Studio update";
+        Font = Theme.Ui();
+        FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
+        MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; KeyPreview = true;
+        BackColor = Theme.Surface; Opacity = 0;
+        ClientSize = new Size(S(580), S(440));
+
+        // footer: status on the left, buttons on the right
+        var footer = new Surface { Dock = DockStyle.Bottom, Height = S(72), Padding = new Padding(S(28), 0, S(28), 0), BorderTop = true };
+        footer.UseRole(() => Theme.Surface);
+        status.Margin = new Padding(0, 0, S(12), 0);
+        skip = new FlatButton { Text = "Skip this version", Kind = BtnKind.Secondary, Height = S(40), AutoWidth = true, MinWidth = 140, Margin = new Padding(S(4), 0, 0, 0), Anchor = AnchorStyles.None };
+        later = new FlatButton { Text = "Later", Kind = BtnKind.Secondary, Height = S(40), AutoWidth = true, MinWidth = 96, Margin = new Padding(S(4), 0, 0, 0), Anchor = AnchorStyles.None };
+        install = new FlatButton { Text = "Update now", Glyph = "\uE896", Kind = BtnKind.Primary, Height = S(40), AutoWidth = true, MinWidth = 150, Margin = new Padding(S(8), 0, 0, 0), Anchor = AnchorStyles.None };
+        skip.FitNow(); later.FitNow(); install.FitNow();
+        skip.Click += (_, _) => { SkipRequested = true; Close(); };
+        later.Click += (_, _) => { if (busy) cts?.Cancel(); else Close(); };      // while downloading, "Later" becomes "Cancel"
+        install.Click += async (_, _) => await InstallAsync();
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        row.Controls.Add(status, 0, 0); row.Controls.Add(skip, 1, 0); row.Controls.Add(later, 2, 0); row.Controls.Add(install, 3, 0);
+        footer.Controls.Add(row);
+        AcceptButton = install; CancelButton = later;
+
+        // body
+        var body = new Surface { Dock = DockStyle.Fill, Padding = new Padding(S(28), S(22), S(28), S(8)) };
+        body.UseRole(() => Theme.Surface);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Color.Transparent };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(38)));    // heading
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(30)));    // version line
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(34)));    // "What's new"
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));       // release notes
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
+
+        layout.Controls.Add(new Txt("A new version is available", 15f, FontStyle.Bold) { Dock = DockStyle.Fill }, 0, 0);
+        layout.Controls.Add(new Txt($"PDF Studio {update.Version} is ready. You have version {AppInfo.Version}.", 9.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill }, 0, 1);
+        layout.Controls.Add(new Txt("What's new", 10f, FontStyle.Bold) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);
+
+        notes.Font = Theme.Ui(9.5f);
+        notes.Text = string.IsNullOrWhiteSpace(update.Notes)
+            ? "No release notes were provided for this version."
+            : update.Notes.Replace("\r\n", "\n").Replace("\n", "\r\n").Trim();
+        notes.Margin = new Padding(0, S(6), 0, S(6));
+        layout.Controls.Add(notes, 0, 3);
+        bar.Margin = new Padding(0, S(8), 0, S(4));
+        layout.Controls.Add(bar, 0, 4);
+        body.Controls.Add(layout);
+
+        Controls.Add(body); Controls.Add(footer);
+        Theme.Apply(body);
+        Shown += (_, _) => { FlatButton.FitTree(this); ModernDialog.FadeIn(this); };
+    }
+
+    private async Task InstallAsync()
+    {
+        if (busy) return;
+        if (!UpdateService.CanSelfUpdate(out var why))
+        {
+            MessageBox.Show(this, why, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        SetBusy(true);
+        cts = new CancellationTokenSource();
+        var progress = new Progress<double>(p =>
+        {
+            if (IsDisposed) return;
+            bar.Value = Math.Clamp((int)(p * 1000), 0, 1000);
+            status.Text = $"Downloading…  {p * 100:0}%";
+        });
+        try
+        {
+            DownloadedPath = await UpdateService.DownloadAsync(update, progress, cts.Token);
+            Downloaded = true; busy = false;
+            if (!IsDisposed) { DialogResult = DialogResult.OK; Close(); }
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed) { SetBusy(false); status.Text = "Download cancelled."; }
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed) { SetBusy(false); status.Text = "Could not download the update."; MessageBox.Show(this, ex.Message, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        }
+    }
+
+    private void SetBusy(bool on)
+    {
+        busy = on;
+        bar.Visible = on; bar.Value = 0;
+        install.Enabled = !on; skip.Enabled = !on;
+        later.Text = on ? "Cancel" : "Later";
+        later.FitNow();
+        if (on) status.Text = "Starting download…";
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (busy) cts?.Cancel();                      // closing the window mid-download cancels it
+        base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing) { if (disposing) cts?.Dispose(); base.Dispose(disposing); }
+}
