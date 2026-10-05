@@ -748,7 +748,7 @@ public sealed partial class MainForm
 
     private bool updateBusy;
 
-    /// <summary>Looks for a newer GitHub release. manual = the user asked for it (so "up to date" and errors are shown).</summary>
+    /// <summary>Looks for a newer version on the monitor server. manual = the user asked for it (so "up to date" and errors are shown).</summary>
     private async Task CheckForUpdatesAsync(bool manual)
     {
         if (updateBusy || busy) return;
@@ -764,7 +764,7 @@ public sealed partial class MainForm
             }
             if (result.Update is not { } update)
             {
-                if (manual) MessageBox.Show(this, $"You are running the latest version ({AppInfo.Version}).", "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (manual) MessageBox.Show(this, $"You are running the latest version ({UpdateService.CurrentVersion}).", "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             if (!manual && UpdateService.SkippedVersion == update.Version) return;

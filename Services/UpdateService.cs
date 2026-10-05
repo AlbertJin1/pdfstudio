@@ -1,42 +1,35 @@
 using PdfStudio.UI;
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace PdfStudio.Services;
 
-/// <summary>A newer release found on GitHub.</summary>
-public sealed record UpdateInfo(string Version, string Tag, string Notes, string AssetApiUrl, long Size, string? Sha256, string PageUrl);
+/// <summary>A newer version offered by the monitor server.</summary>
+public sealed record UpdateInfo(string Version, string Notes, string DownloadUrl, long Size, string? Sha256);
 
 /// <summary>Result of a check: Update is null when you are up to date; Error is set when the check itself failed.</summary>
 public sealed record UpdateCheck(UpdateInfo? Update, string? Error);
 
 /// <summary>
-/// Self-update from GitHub Releases.
+/// Self-update from the PDF Studio Monitor server (the PHP app behind the ngrok address, see UsageTracker.DefaultBaseUrl).
+/// The exe you upload on the monitor's "Releases" page is what every copy of PDF Studio is offered.
 ///
-///  1. CheckAsync    asks the GitHub API for the latest release and compares its tag (v2.7.0) with the running version.
-///  2. DownloadAsync saves the release's PdfStudio.exe next to the running exe as PdfStudio.exe.new and verifies it.
+///  1. CheckAsync       GET  {monitor}/update.php?action=latest   -> newest uploaded version, notes, size and SHA-256.
+///  2. DownloadAsync    GET  {monitor}/update.php?action=download -> saves it next to the running exe as PdfStudio.exe.new and verifies it.
 ///  3. ApplyAndRestart  renames the running exe to PdfStudio.exe.old (Windows allows renaming a running exe, just not
 ///                      overwriting it), moves the new file into place and starts it. The new copy deletes the .old
 ///                      file on its next start (CleanupLeftovers).
 ///
-/// Private repository: the GitHub API needs a token. Put a fine-grained, read-only token in <see cref="DefaultToken"/>,
-/// or in %LOCALAPPDATA%\PdfStudio\settings.txt as   update_token=github_pat_...   (see UPDATES.md for the security notes).
-/// Other settings keys: update_repo=owner/name   auto_update=1/0   update_skip=2.7.0
+/// The app asks the user (update now / later / skip this version) a few seconds after it starts; see MainForm.CheckForUpdatesAsync.
+/// Settings (key=value lines in %LOCALAPPDATA%\PdfStudio\settings.txt):
+///   monitor_url / monitor_key   the same server address and API key the usage statistics use
+///   auto_update = 0             turn off the check at startup (Help / About → "Check for updates" still works)
+///   update_skip = 2.7.0         the version the user chose to skip
 /// </summary>
 public static class UpdateService
 {
-    // ── CHANGE THESE ───────────────────────────────────────────────────────────────────────────────────────────
-    public const string DefaultRepo = "YOUR-GITHUB-USERNAME/YOUR-REPO";   // "owner/name"
-    private const string DefaultToken = "";                               // leave empty for a public repo
-    private const string AssetName = "PdfStudio.exe";                     // the file you attach to each release
-    // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-    private static string Repo => AppSettings.Get("update_repo", DefaultRepo).Trim();
-    private static string Token => AppSettings.Get("update_token", DefaultToken).Trim();
-
     public static bool AutoCheck => AppSettings.GetBool("auto_update", true);
     public static string SkippedVersion { get => AppSettings.Get("update_skip"); set => AppSettings.Set("update_skip", value); }
 
@@ -44,22 +37,20 @@ public static class UpdateService
 
     private static HttpClient CreateClient()
     {
-        // Redirects are followed by hand: GitHub answers an asset download with a 302 to a pre-signed storage URL,
-        // and that second request must NOT carry the Authorization header.
-        var handler = new SocketsHttpHandler { AllowAutoRedirect = false };
-        var c = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var c = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };    // each call sets its own limit; a big download must not be cut off
         c.DefaultRequestHeaders.UserAgent.ParseAdd($"PdfStudio/{AppInfo.Version}");
+        c.DefaultRequestHeaders.TryAddWithoutValidation("ngrok-skip-browser-warning", "1");   // skips ngrok's free-plan interstitial page
         return c;
     }
 
-    private static HttpRequestMessage Api(string url, string accept)
+    private static HttpRequestMessage Get(string url)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
-        req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
-        if (Token.Length > 0) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+        req.Headers.TryAddWithoutValidation("X-Api-Key", UsageTracker.ApiKey);
         return req;
     }
+
+    private static string Endpoint(string query) => $"{UsageTracker.BaseUrl}/update.php?{query}";
 
     // ───────────────────────── paths / guards ─────────────────────────
 
@@ -67,12 +58,37 @@ public static class UpdateService
     private static string NewPath => ExePath + ".new";
     private static string OldPath => ExePath + ".old";
 
+    private static bool IsDevHost(string? exe) =>
+        string.IsNullOrEmpty(exe) || string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The version this copy is compared with the server's. It is read from the exe's own Windows file version, which is exactly
+    /// what the monitor reads when you upload an exe, so the two can never disagree. Falls back to the assembly version.
+    /// </summary>
+    public static string CurrentVersion
+    {
+        get
+        {
+            try
+            {
+                if (!IsDevHost(ExePath))
+                {
+                    var v = FileVersionInfo.GetVersionInfo(ExePath!);
+                    if (v.FileMajorPart > 0 || v.FileMinorPart > 0 || v.FileBuildPart > 0)
+                        return $"{v.FileMajorPart}.{v.FileMinorPart}.{v.FileBuildPart}";
+                }
+            }
+            catch { }
+            return AppInfo.Version;
+        }
+    }
+
     /// <summary>False when running from 'dotnet run' / the IDE, or from a folder the user cannot write to (e.g. Program Files).</summary>
     public static bool CanSelfUpdate(out string reason)
     {
         reason = "";
         var exe = ExePath;
-        if (string.IsNullOrEmpty(exe) || string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase))
+        if (IsDevHost(exe))
         { reason = "This copy is running from the development environment, so it cannot replace itself."; return false; }
         try
         {
@@ -116,73 +132,47 @@ public static class UpdateService
 
     public static async Task<UpdateCheck> CheckAsync(CancellationToken ct = default)
     {
-        var repo = Repo;
-        if (!repo.Contains('/') || repo.StartsWith("YOUR-", StringComparison.OrdinalIgnoreCase))
-            return new UpdateCheck(null, "Updates are not configured yet (set the repository in Services/UpdateService.cs).");
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(15));
-            using var req = Api($"https://api.github.com/repos/{repo}/releases/latest", "application/vnd.github+json");
+            using var req = Get(Endpoint("action=latest&version=" + Uri.EscapeDataString(CurrentVersion)));
+            req.Headers.TryAddWithoutValidation("Accept", "application/json");
             using var res = await Http.SendAsync(req, cts.Token).ConfigureAwait(false);
 
             switch (res.StatusCode)
             {
-                case HttpStatusCode.NotFound:
-                    return new UpdateCheck(null, Token.Length == 0
-                        ? "No published release was found. If the repository is private, an access token is required."
-                        : "No published release was found, or the access token cannot read this repository.");
                 case HttpStatusCode.Unauthorized:
-                    return new UpdateCheck(null, "GitHub rejected the access token (expired or revoked).");
-                case HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests:
-                    return new UpdateCheck(null, "GitHub is limiting requests right now. Please try again later.");
+                    return new UpdateCheck(null, "The update server did not accept this app's access key.");
+                case HttpStatusCode.NotFound:
+                    return new UpdateCheck(null, "The update server was reached, but it has no update service. Is the monitor up to date?");
             }
             res.EnsureSuccessStatusCode();
 
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false));
             var root = doc.RootElement;
-            var tag = root.GetProperty("tag_name").GetString() ?? "";
-            if (!TryParse(tag, out var latest)) return new UpdateCheck(null, $"The latest release has an unrecognised version tag ('{tag}').");
-            if (!TryParse(AppInfo.Version, out var current) || latest <= current) return new UpdateCheck(null, null);
+            if (!root.TryGetProperty("latest", out var latest) || latest.ValueKind != JsonValueKind.Object)
+                return new UpdateCheck(null, null);               // nothing uploaded yet: you are up to date
 
-            JsonElement? asset = null;
-            if (root.TryGetProperty("assets", out var assets))
-                foreach (var a in assets.EnumerateArray())
-                    if (string.Equals(a.GetProperty("name").GetString(), AssetName, StringComparison.OrdinalIgnoreCase)) { asset = a; break; }
-            if (asset is null) return new UpdateCheck(null, $"Release {tag} has no '{AssetName}' file attached.");
+            var version = latest.GetProperty("version").GetString() ?? "";
+            if (!TryParse(version, out var newest)) return new UpdateCheck(null, $"The update server sent an unrecognised version ('{version}').");
+            if (!TryParse(CurrentVersion, out var current) || newest <= current) return new UpdateCheck(null, null);
 
-            string? sha = null;                                   // GitHub reports "sha256:<hex>" for uploaded assets
-            if (asset.Value.TryGetProperty("digest", out var d) && d.GetString() is { } ds && ds.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
-                sha = ds[7..];
-
+            var clean = $"{newest.Major}.{newest.Minor}.{newest.Build}";
             return new UpdateCheck(new UpdateInfo(
-                $"{latest.Major}.{latest.Minor}.{latest.Build}", tag,
-                root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "",
-                asset.Value.GetProperty("url").GetString()!,
-                asset.Value.TryGetProperty("size", out var s) ? s.GetInt64() : 0,
-                sha,
-                root.TryGetProperty("html_url", out var h) ? h.GetString() ?? "" : ""), null);
+                clean,
+                latest.TryGetProperty("notes", out var n) ? n.GetString() ?? "" : "",
+                Endpoint("action=download&version=" + Uri.EscapeDataString(clean)),
+                latest.TryGetProperty("size", out var s) && s.TryGetInt64(out var size) ? size : 0,
+                latest.TryGetProperty("sha256", out var h) ? h.GetString() : null), null);
         }
-        catch (OperationCanceledException) { return new UpdateCheck(null, "GitHub did not answer in time."); }
-        catch (HttpRequestException) { return new UpdateCheck(null, "Could not reach GitHub. Check your internet connection."); }
+        catch (OperationCanceledException) { return new UpdateCheck(null, "The update server did not answer in time."); }
+        catch (HttpRequestException) { return new UpdateCheck(null, "Could not reach the update server. Check your internet connection."); }
+        catch (JsonException) { return new UpdateCheck(null, "The update server sent an unexpected reply."); }
         catch (Exception ex) { return new UpdateCheck(null, ex.Message); }
     }
 
     // ───────────────────────── 2. download ─────────────────────────
-
-    private static async Task<HttpResponseMessage> OpenAssetAsync(string url, CancellationToken ct)
-    {
-        using var req = Api(url, "application/octet-stream");
-        var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        if ((int)res.StatusCode is >= 300 and < 400 && res.Headers.Location is { } loc)
-        {
-            res.Dispose();
-            var next = loc.IsAbsoluteUri ? loc : new Uri(new Uri(url), loc);
-            using var plain = new HttpRequestMessage(HttpMethod.Get, next);     // pre-signed URL: no Authorization header
-            return await Http.SendAsync(plain, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        }
-        return res;
-    }
 
     /// <summary>Downloads and verifies the new exe. Returns the path of PdfStudio.exe.new.</summary>
     public static async Task<string> DownloadAsync(UpdateInfo update, IProgress<double>? progress, CancellationToken ct)
@@ -191,8 +181,12 @@ public static class UpdateService
         var target = NewPath;
         try
         {
-            using var res = await OpenAssetAsync(update.AssetApiUrl, ct).ConfigureAwait(false);
+            using var req = Get(update.DownloadUrl);
+            using var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if (res.StatusCode == HttpStatusCode.NotFound) throw new IOException("This version is no longer available on the update server.");
+            if (res.StatusCode == HttpStatusCode.Unauthorized) throw new IOException("The update server did not accept this app's access key.");
             res.EnsureSuccessStatusCode();
+
             var total = res.Content.Headers.ContentLength ?? update.Size;
             await using (var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
             await using (var dst = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
@@ -223,6 +217,11 @@ public static class UpdateService
                 }
             }
             return target;
+        }
+        catch (HttpRequestException)
+        {
+            try { if (File.Exists(target)) File.Delete(target); } catch { }
+            throw new IOException("Could not download the update. Check your internet connection and try again.");
         }
         catch
         {

@@ -68,7 +68,7 @@ public sealed class UpdateDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
 
         layout.Controls.Add(new Txt("A new version is available", 15f, FontStyle.Bold) { Dock = DockStyle.Fill }, 0, 0);
-        layout.Controls.Add(new Txt($"PDF Studio {update.Version} is ready. You have version {AppInfo.Version}.", 9.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill }, 0, 1);
+        layout.Controls.Add(new Txt($"PDF Studio {update.Version} is ready. You have version {UpdateService.CurrentVersion}.", 9.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill }, 0, 1);
         layout.Controls.Add(new Txt("What's new", 10f, FontStyle.Bold) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);
 
         notes.Font = Theme.Ui(9.5f);

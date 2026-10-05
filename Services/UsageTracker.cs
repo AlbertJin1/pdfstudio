@@ -23,7 +23,7 @@ public static class UsageTracker
     // ngrok serves HTTPS on the default port (443): ngrok forwards it to the PHP server that listens on :8080 on the host PC.
     public const string DefaultBaseUrl = "https://paternal-carefully-glucose.ngrok-free.dev/pdfstudio-monitor/api";
     // Must be the same value as 'api_key' in pdfstudio-monitor/config.php. Change both before you ship.
-    private const string DefaultApiKey = "change-this-key";
+    private const string DefaultApiKey = "2YN0sJIeJZeGL33wip2xmN2YEvs4TzqV";
 
     private const int HeartbeatMs = 60_000;
     private const int MaxQueued = 100;
@@ -36,8 +36,9 @@ public static class UsageTracker
     private static System.Threading.Timer? heartbeat;
     private static bool started, stopped;
 
-    private static string BaseUrl => AppSettings.Get("monitor_url", DefaultBaseUrl).Trim().TrimEnd('/');
-    private static string ApiKey => AppSettings.Get("monitor_key", DefaultApiKey).Trim();
+    // internal: UpdateService talks to the same monitor server with the same address and key.
+    internal static string BaseUrl => AppSettings.Get("monitor_url", DefaultBaseUrl).Trim().TrimEnd('/');
+    internal static string ApiKey => AppSettings.Get("monitor_key", DefaultApiKey).Trim();
     private static string QueuePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PdfStudio", "usage-queue.jsonl");
 
     /// <summary>Whether anonymous usage statistics are shared. On by default and not exposed in the UI (reviews are sent when the user presses Send).</summary>
