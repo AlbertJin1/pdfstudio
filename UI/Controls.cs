@@ -515,7 +515,7 @@ public class ModernCombo : ComboBox
         var textW = 0;
         foreach (var it in Items)
         {
-            var t = GetItemText(it); lb.Items.Add(t);
+            var t = GetItemText(it) ?? string.Empty; lb.Items.Add(t);
             textW = Math.Max(textW, TextRenderer.MeasureText(t, Font, new Size(2000, 100), TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width);
         }
         var visible = Math.Min(lb.Items.Count, Math.Max(8, MaxDropDownItems));

@@ -48,7 +48,7 @@ public sealed partial class EditorForm : Form
     private RectangleF dragBounds;
     private int dragHandle = -1;
     private bool dragUndoPushed;
-    private TextBox? editBox;
+    private RichTextBox? editBox;
     private PageEditObject? editObj;
     private bool editIsNew;
     private (string OrigText, List<PageEditObject> Before)? pendingConv;
@@ -1154,22 +1154,31 @@ public sealed partial class EditorForm : Form
         CommitInlineEdit();
         editObj = o; editIsNew = isNew; sel = o;
         if (!fromConversion) { pendingConv = null; }
-        var box = new TextBox
+        var box = new RichTextBox
         {
-            Multiline = true, AcceptsReturn = true, WordWrap = false, ScrollBars = ScrollBars.None, BorderStyle = BorderStyle.None,
-            BackColor = EditBoxBack(o), Text = (o.Text ?? "").Replace("\n", "\r\n")
+            Multiline = true, AcceptsTab = false, WordWrap = false, ScrollBars = RichTextBoxScrollBars.None,
+            BorderStyle = BorderStyle.None, DetectUrls = false, HideSelection = false,
+            BackColor = EditBoxBack(o), ForeColor = EditPainter.Parse(o.ColorHex, Color.Black),
+            Text = (o.Text ?? "").Replace("\n", "\r\n")
         };
         editBox = box; editOrigText = o.Text ?? "";
         canvas.Controls.Add(box);
         ZeroMargins(box);
+        LoadRichTextStyles(box, o);
         ShowEditBar();
         hint.Text = TypingHint; editOrigPos = (o.X, o.Y); editGripUndo = false;
         StyleEditBox();
         box.TextChanged += (_, _) =>
         {
             if (editBox != box || editObj == null) return;
-            editObj.Text = box.Text.Replace("\r\n", "\n"); dirty = true;
+            editObj.Text = box.Text.Replace("\r\n", "\n").Replace("\r", "");
+            dirty = true;
             ResizeEditBox(); canvas.Invalidate();
+        };
+        box.SelectionChanged += (_, _) =>
+        {
+            if (editBox != box || editObj == null || updatingUi) return;
+            SyncProps();
         };
         box.KeyDown += (_, e) =>
         {
@@ -1181,14 +1190,99 @@ public sealed partial class EditorForm : Form
         }));
         box.Focus();
         if (isNew || fromConversion) box.SelectAll(); else box.Select(box.TextLength, 0);
+        SyncProps();
         canvas.Invalidate();
+    }
+
+    private static Font RichFont(string name, double sizePx, bool bold, bool italic, bool underline)
+    {
+        var fam = TextMetrics.Family(name);
+        var style = TextMetrics.StyleFor(fam, bold, italic) | (underline ? FontStyle.Underline : 0);
+        try { return new Font(fam, (float)Math.Max(4, sizePx), style, GraphicsUnit.Pixel); }
+        catch { return new Font("Arial", (float)Math.Max(4, sizePx), FontStyle.Regular, GraphicsUnit.Pixel); }
+    }
+
+    private static int ModelIndexToRichIndex(RichTextBox box, int modelIndex)
+    {
+        modelIndex = Math.Max(0, modelIndex);
+        var count = 0;
+        var text = box.Text;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (count >= modelIndex) return i;
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n') { i++; count++; }
+            else count++;
+        }
+        return text.Length;
+    }
+
+    private void LoadRichTextStyles(RichTextBox box, PageEditObject o)
+    {
+        if (box.TextLength == 0)
+        {
+            box.Font = RichFont(o.FontName, o.FontSize * zoom, o.Bold, o.Italic, o.Underline);
+            box.ForeColor = EditPainter.Parse(o.ColorHex, Color.Black);
+            return;
+        }
+        var oldStart = box.SelectionStart; var oldLen = box.SelectionLength;
+        box.SelectAll();
+        using (var f = RichFont(o.FontName, o.FontSize * zoom, o.Bold, o.Italic, o.Underline)) box.SelectionFont = f;
+        box.SelectionColor = EditPainter.Parse(o.ColorHex, Color.Black);
+        foreach (var r in o.TextStyles.OrderBy(x => x.Start))
+        {
+            var modelStart = Math.Clamp(r.Start, 0, (box.Text ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Length);
+            var modelEnd = Math.Clamp(r.Start + r.Length, modelStart, (box.Text ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Length);
+            var a = ModelIndexToRichIndex(box, modelStart);
+            var b = ModelIndexToRichIndex(box, modelEnd);
+            var len = Math.Max(0, b - a);
+            if (len <= 0) continue;
+            box.Select(a, len);
+            using var f = RichFont(r.FontName, r.FontSize * zoom, r.Bold, r.Italic, r.Underline);
+            box.SelectionFont = f;
+            box.SelectionColor = EditPainter.Parse(r.ColorHex, Color.Black);
+        }
+        box.Select(Math.Clamp(oldStart, 0, box.TextLength), Math.Min(oldLen, Math.Max(0, box.TextLength - oldStart)));
+    }
+
+    private void CaptureRichTextStyles()
+    {
+        if (editBox == null || editObj == null) return;
+        var box = editBox; var o = editObj;
+        var normalized = box.Text.Replace("\r\n", "\n").Replace("\r", "\n");
+        o.Text = normalized;
+        o.TextStyles.Clear();
+        if (normalized.Length == 0) return;
+
+        var savedStart = box.SelectionStart; var savedLen = box.SelectionLength;
+        var modelIndex = 0;
+        for (var i = 0; i < box.TextLength && modelIndex < normalized.Length; i++)
+        {
+            var ch = box.Text[i];
+            if (ch == '\r' && i + 1 < box.TextLength && box.Text[i + 1] == '\n') continue;
+            box.Select(i, 1);
+            var f = box.SelectionFont;
+            var c = box.SelectionColor;
+            var fontName = f?.Name ?? o.FontName;
+            var size = f?.Size is > 0 ? f!.Size / Math.Max(0.01f, zoom) : o.FontSize;
+            var bold = f?.Bold ?? o.Bold; var italic = f?.Italic ?? o.Italic; var underline = f?.Underline ?? o.Underline;
+            var hex = PageEditObject.Hex(c);
+            var run = new TextStyleRun { Start = modelIndex, Length = 1, FontName = fontName, FontSize = Math.Round(size, 2), Bold = bold, Italic = italic, Underline = underline, ColorHex = hex };
+            if (o.TextStyles.Count > 0)
+            {
+                var prev = o.TextStyles[^1];
+                if (prev.Start + prev.Length == run.Start && prev.SameStyle(run)) { prev.Length++; modelIndex++; continue; }
+            }
+            o.TextStyles.Add(run);
+            modelIndex++;
+        }
+        box.Select(Math.Clamp(savedStart, 0, box.TextLength), Math.Min(savedLen, Math.Max(0, box.TextLength - savedStart)));
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     /// <summary>Removes the edit control's built-in left/right padding so typed text starts exactly where the PDF text does.</summary>
-    private static void ZeroMargins(TextBox t)
+    private static void ZeroMargins(RichTextBox t)
     {
         const int EM_SETMARGINS = 0xD3, EC_LEFTMARGIN = 1, EC_RIGHTMARGIN = 2;
         try { SendMessage(t.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), IntPtr.Zero); } catch { }
@@ -1209,31 +1303,74 @@ public sealed partial class EditorForm : Form
     {
         if (editBox == null || editObj == null) return;
         var o = editObj;
-        editBox.Font = EditPainter.GetFont(o.FontName, o.FontSize * zoom, o.Bold, o.Italic, o.Underline);
-        editBox.ForeColor = EditPainter.Parse(o.ColorHex, Color.Black);
+        // RichTextBox owns the live selection formatting; keep the fallback object style in sync for newly typed text.
         PositionEditBox();
+    }
+
+    private void ApplySelectionFont(string? fontName = null, double? sizePt = null, bool? bold = null, bool? italic = null, bool? underline = null, Color? color = null)
+    {
+        if (editBox == null || editObj == null) return;
+        var box = editBox; var o = editObj;
+        var start = box.SelectionStart; var length = box.SelectionLength;
+        if (length <= 0)
+        {
+            var current = box.SelectionFont;
+            var name = fontName ?? current?.Name ?? o.FontName;
+            var size = sizePt ?? (current?.Size > 0 ? current.Size / Math.Max(0.01f, zoom) : o.FontSize);
+            var b = bold ?? current?.Bold ?? o.Bold; var it = italic ?? current?.Italic ?? o.Italic; var u = underline ?? current?.Underline ?? o.Underline;
+            var col = color ?? box.SelectionColor;
+            using var f0 = RichFont(name, size * zoom, b, it, u);
+            box.SelectionFont = f0; box.SelectionColor = col;
+            o.FontName = name; o.FontSize = size; o.Bold = b; o.Italic = it; o.Underline = u; o.ColorHex = PageEditObject.Hex(col);
+        }
+        else
+        {
+            // Apply only the requested attribute to every selected character. This preserves mixed bold/italic/size/colour
+            // inside a selection instead of flattening it to the style of the first character.
+            for (var i = start; i < start + length; i++)
+            {
+                box.Select(i, 1);
+                var current = box.SelectionFont;
+                var name = fontName ?? current?.Name ?? o.FontName;
+                var size = sizePt ?? (current?.Size > 0 ? current.Size / Math.Max(0.01f, zoom) : o.FontSize);
+                var b = bold ?? current?.Bold ?? o.Bold; var it = italic ?? current?.Italic ?? o.Italic; var u = underline ?? current?.Underline ?? o.Underline;
+                var col = color ?? box.SelectionColor;
+                using var f = RichFont(name, size * zoom, b, it, u);
+                box.SelectionFont = f; box.SelectionColor = col;
+            }
+            box.Select(start, length);
+            // Object-level values remain the style used for newly typed text; captured runs preserve the selected range.
+            if (fontName != null) o.FontName = fontName;
+            if (sizePt != null) o.FontSize = sizePt.Value;
+            if (bold != null) o.Bold = bold.Value;
+            if (italic != null) o.Italic = italic.Value;
+            if (underline != null) o.Underline = underline.Value;
+            if (color != null) o.ColorHex = PageEditObject.Hex(color.Value);
+        }
+        CaptureRichTextStyles();
+        dirty = true; ResizeEditBox(); canvas.Invalidate();
     }
 
     private void PositionEditBox()
     {
         if (editBox == null || editObj == null) return;
         var p = ToScr(editObj.X, editObj.Y);
-        editBox.Location = new Point((int)Math.Round(p.X), (int)Math.Round(p.Y));   // line-box top-left, no fudge offsets
+        editBox.Location = new Point((int)Math.Round(p.X), (int)Math.Round(p.Y));
         ResizeEditBox();
     }
 
     private void ResizeEditBox()
     {
         if (editBox == null || editObj == null) return;
-        var lines = Math.Max(1, editBox.Lines.Length);
         var m = EditPainter.MeasureText(editObj);
-        editBox.Size = new Size(Math.Max(Theme.S(70), (int)(m.Width * zoom) + 28), lines * editBox.Font.Height + 2);
+        editBox.Size = new Size(Math.Max(Theme.S(70), (int)(m.Width * zoom) + 28), Math.Max(Theme.S(22), (int)(m.Height * zoom) + Theme.S(4)));
         PositionEditBar();
     }
 
     private void CommitInlineEdit()
     {
         if (editBox == null || editObj == null) return;
+        CaptureRichTextStyles();
         var box = editBox; var o = editObj; var isNew = editIsNew;
         editBox = null; editObj = null;
         canvas.Controls.Remove(box); box.Dispose();
@@ -1246,7 +1383,6 @@ public sealed partial class EditorForm : Form
         }
         else if (pendingConv is { } pc && o.Text == pc.OrigText && !convDirty)
         {
-            // nothing was changed: put the page back exactly as it was
             var list = Objs; list.Clear(); list.AddRange(pc.Before);
             if (undo.Count > 0) undo.RemoveAt(undo.Count - 1);
             UpdateUndoButtons(); sel = null;
@@ -1272,10 +1408,23 @@ public sealed partial class EditorForm : Form
         var t = TextTarget; if (t == null) return;
         if (t != defaults) { PushUndoCoalesced(key); convDirty = true; }
         change(t);
+        if (t == editObj && editBox != null && editBox.SelectionLength > 0 && (key is "font" or "size" or "bold" or "italic" or "underline" or "tcolor"))
+        {
+            ApplySelectionFont(
+                fontName: key == "font" ? t.FontName : null,
+                sizePt: key == "size" ? t.FontSize : null,
+                bold: key == "bold" ? t.Bold : null,
+                italic: key == "italic" ? t.Italic : null,
+                underline: key == "underline" ? t.Underline : null,
+                color: key == "tcolor" ? EditPainter.Parse(t.ColorHex, Color.Black) : null);
+        }
+        else if (t == editObj)
+        {
+            CaptureRichTextStyles();
+        }
         if (t != defaults) CopyTextDefaults(t);
-        if (t == editObj) { StyleEditBox(); }
-        canvas.Invalidate();
         if (t != defaults) SyncPosOnly();
+        canvas.Invalidate();
     }
 
     private void ApplyShape(Action<PageEditObject> change, string key)
@@ -1328,13 +1477,34 @@ public sealed partial class EditorForm : Form
             };
             if (tt != null)
             {
-                var i = fontBox.Items.IndexOf(tt.FontName);
-                if (i < 0) { fontBox.Items.Insert(0, tt.FontName); i = 0; }
+                var fontName = tt.FontName; var fontSize = tt.FontSize; var bold = tt.Bold; var italic = tt.Italic; var underline = tt.Underline; var color = EditPainter.Parse(tt.ColorHex, Color.Black);
+                if (tt == editObj && editBox != null)
+                {
+                    var savedStart = editBox.SelectionStart; var savedLen = editBox.SelectionLength;
+                    if (savedLen > 0 && savedStart < editBox.TextLength)
+                    {
+                        editBox.Select(savedStart, 1);
+                        var f = editBox.SelectionFont;
+                        if (f != null) { fontName = f.Name; fontSize = f.Size / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
+                        color = editBox.SelectionColor;
+                        editBox.Select(savedStart, Math.Min(savedLen, editBox.TextLength - savedStart));
+                    }
+                    else if (savedLen == 0 && savedStart < editBox.TextLength)
+                    {
+                        editBox.Select(savedStart, 1);
+                        var f = editBox.SelectionFont;
+                        if (f != null) { fontName = f.Name; fontSize = f.Size / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
+                        color = editBox.SelectionColor;
+                        editBox.Select(savedStart, 0);
+                    }
+                }
+                var i = fontBox.Items.IndexOf(fontName);
+                if (i < 0) { fontBox.Items.Insert(0, fontName); i = 0; }
                 fontBox.SelectedIndex = i;
-                SetNum(sizeNum, tt.FontSize);
-                boldBtn.Active = tt.Bold; italicBtn.Active = tt.Italic; underBtn.Active = tt.Underline;
+                SetNum(sizeNum, fontSize);
+                boldBtn.Active = bold; italicBtn.Active = italic; underBtn.Active = underline;
                 boldBtn.Invalidate(); italicBtn.Invalidate(); underBtn.Invalidate();
-                textSwatch.BackColor = EditPainter.Parse(tt.ColorHex, Color.Black);
+                textSwatch.BackColor = color;
             }
             if (shapeGroup.Visible && o != null)
             {

@@ -301,6 +301,29 @@ public sealed class PdfService
         for (var i = 0; i < lines.Length; i++) g.DrawString(lines[i], font, brush, new XPoint(ax, top + i * lh), fmt);
     }
 
+    private static List<TextStyleRun> NormalizeTextRuns(PageEditObject o)
+    {
+        var text = (o.Text ?? "").Replace("\r", "");
+        var n = text.Length;
+        if (n == 0) return new List<TextStyleRun>();
+        var baseRun = new TextStyleRun { Start = 0, Length = n, FontName = o.FontName, FontSize = o.FontSize, Bold = o.Bold, Italic = o.Italic, Underline = o.Underline, ColorHex = o.ColorHex };
+        if (o.TextStyles.Count == 0) return new List<TextStyleRun> { baseRun };
+        var result = new List<TextStyleRun>();
+        var cursor = 0;
+        foreach (var source in o.TextStyles.OrderBy(r => r.Start))
+        {
+            var a = Math.Clamp(source.Start, 0, n);
+            var b = Math.Clamp(source.Start + source.Length, a, n);
+            if (b <= a) continue;
+            if (a > cursor) { var gap = baseRun.Clone(); gap.Start = cursor; gap.Length = a - cursor; result.Add(gap); }
+            if (a < cursor) a = cursor;
+            if (b <= a) continue;
+            var r = source.Clone(); r.Start = a; r.Length = b - a; result.Add(r); cursor = b;
+        }
+        if (cursor < n) { var tail = baseRun.Clone(); tail.Start = cursor; tail.Length = n - cursor; result.Add(tail); }
+        return result;
+    }
+
     /// <summary>Draws one Edit PDF object (absolute coordinates, points, top-left origin).</summary>
     private static void DrawEdit(XGraphics g, PageEditObject o, List<IDisposable> keep)
     {
@@ -309,28 +332,49 @@ public sealed class PdfService
             case EditKind.Text:
             {
                 if (string.IsNullOrEmpty(o.Text)) return;
-                var size = Math.Max(4, o.FontSize);
-                var flags = (o.Bold ? 1 : 0) | (o.Italic ? 2 : 0) | (o.Underline ? 4 : 0);
-                XFont font;
-                try { font = new XFont(o.FontName, size, (XFontStyleEx)flags); }
-                catch
-                {
-                    try { font = new XFont("Arial", size, (XFontStyleEx)flags); }
-                    catch { font = new XFont("Arial", size, XFontStyleEx.Regular); }
-                }
-                var brush = new XSolidBrush(ParseColor(o.ColorHex));
-                var lines = o.Text.Replace("\r", "").Split('\n');
-                var lh = size * 1.25;
-                // o.Y is the top of the line box; the baseline is one font-ascent below it (same rule as the editor canvas),
-                // and we draw ON the baseline so PDFsharp's own ascent maths cannot move the text.
-                var asc = TextMetrics.Ascent(o.FontName, size, o.Bold, o.Italic);
+                var text = o.Text.Replace("\r", "");
+                var lines = text.Split('\n');
+                var runs = NormalizeTextRuns(o);
                 var hs = o.HScale is > 0.2 and < 5 ? o.HScale : 1.0;
-                var fmt = new XStringFormat { Alignment = XStringAlignment.Near, LineAlignment = XLineAlignment.BaseLine };
                 var state = g.Save();
                 g.TranslateTransform(o.X, o.Y);
                 if (Math.Abs(hs - 1.0) > 0.0005) g.ScaleTransform(hs, 1.0);
-                for (var i = 0; i < lines.Length; i++)
-                    if (lines[i].Length > 0) g.DrawString(lines[i], font, brush, new XPoint(0, asc + i * lh), fmt);
+                var offset = 0;
+                var fmt = new XStringFormat { Alignment = XStringAlignment.Near, LineAlignment = XLineAlignment.BaseLine };
+                foreach (var line in lines)
+                {
+                    var lineRuns = runs.Where(r => r.Start < offset + line.Length && r.Start + r.Length > offset).ToList();
+                    var lineHeight = Math.Max(4, lineRuns.Count == 0 ? o.FontSize : lineRuns.Max(r => r.FontSize)) * 1.25;
+                    var baseline = lineRuns.Count == 0 ? TextMetrics.Ascent(o.FontName, o.FontSize, o.Bold, o.Italic) :
+                        lineRuns.Max(r => TextMetrics.Ascent(r.FontName, r.FontSize, r.Bold, r.Italic));
+                    var x = 0.0;
+                    foreach (var r in lineRuns)
+                    {
+                        var local = Math.Max(0, r.Start - offset);
+                        var len = Math.Min(r.Length, line.Length - local);
+                        if (len <= 0) continue;
+                        var part = line.Substring(local, len);
+                        var flags = (r.Bold ? 1 : 0) | (r.Italic ? 2 : 0);
+                        XFont font;
+                        try { font = new XFont(r.FontName, Math.Max(4, r.FontSize), (XFontStyleEx)flags); }
+                        catch
+                        {
+                            try { font = new XFont("Arial", Math.Max(4, r.FontSize), (XFontStyleEx)flags); }
+                            catch { font = new XFont("Arial", Math.Max(4, r.FontSize), XFontStyleEx.Regular); }
+                        }
+                        var brush = new XSolidBrush(ParseColor(r.ColorHex));
+                        g.DrawString(part, font, brush, new XPoint(x, baseline), fmt);
+                        if (r.Underline)
+                        {
+                            var width = TextMetrics.Advance(part, r.FontName, r.FontSize, r.Bold, r.Italic);
+                            var y = baseline + Math.Max(0.5, r.FontSize * 0.10);
+                            g.DrawLine(new XPen(ParseColor(r.ColorHex), Math.Max(0.5, r.FontSize / 16.0)), x, y, x + width, y);
+                        }
+                        x += TextMetrics.Advance(part, r.FontName, r.FontSize, r.Bold, r.Italic);
+                    }
+                    offset += line.Length + 1;
+                    if (offset <= text.Length) g.TranslateTransform(0, lineHeight);
+                }
                 g.Restore(state);
                 break;
             }

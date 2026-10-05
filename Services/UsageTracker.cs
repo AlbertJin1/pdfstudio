@@ -33,8 +33,9 @@ public static class UsageTracker
     private static readonly Stopwatch Clock = new();
     private static readonly string SessionId = Guid.NewGuid().ToString("N");
     private static long startedAt;
-    private static System.Threading.Timer? heartbeat;
+    private static System.Threading.Timer? heartbeat, reviewRetry;
     private static bool started, stopped;
+    private static int flushingQueue;
 
     // internal: UpdateService talks to the same monitor server with the same address and key.
     internal static string BaseUrl => AppSettings.Get("monitor_url", DefaultBaseUrl).Trim().TrimEnd('/');
@@ -44,6 +45,16 @@ public static class UsageTracker
     /// <summary>Whether anonymous usage statistics are shared. On by default and not exposed in the UI (reviews are sent when the user presses Send).</summary>
     public static bool Enabled => AppSettings.GetBool("usage_stats", true);
     public static void SetEnabled(bool on) => AppSettings.SetBool("usage_stats", on);
+
+    /// <summary>True after the user has submitted a review or accepted saving it for later delivery.</summary>
+    public static bool HasReviewed => AppSettings.GetBool("review_completed", false);
+    public static bool ReviewPending => HasReviewed && AppSettings.GetBool("review_pending", false);
+
+    private static void MarkReviewSubmitted(bool pending)
+    {
+        AppSettings.SetBool("review_completed", true);
+        AppSettings.SetBool("review_pending", pending);
+    }
 
     private static string InstallId
     {
@@ -69,8 +80,12 @@ public static class UsageTracker
     /// <summary>Call once when the main window is shown: records one "open" and starts the minute heartbeat.</summary>
     public static void Start()
     {
-        if (started || !Enabled) return;
-        started = true;
+        if (started) return;
+        started = true; stopped = false;
+        // Reviews have their own retry path, even when anonymous usage statistics were disabled for testing.
+        reviewRetry = new System.Threading.Timer(_ => { if (!stopped) _ = FlushQueueAsync(); }, null, HeartbeatMs, HeartbeatMs);
+        _ = FlushQueueAsync();
+        if (!Enabled) return;
         startedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Clock.Start();
         _ = Task.Run(async () =>
@@ -82,6 +97,7 @@ public static class UsageTracker
         {
             if (stopped || !Enabled) return;
             _ = SendAsync(Build("heartbeat"), 8000);          // cumulative, so a missed one is harmless
+            _ = FlushQueueAsync();                           // also retries pending reviews/events when connectivity returns
         }, null, HeartbeatMs, HeartbeatMs);
     }
 
@@ -90,7 +106,9 @@ public static class UsageTracker
     {
         if (!started || stopped) return;
         stopped = true;
-        try { heartbeat?.Dispose(); } catch { }
+        try { heartbeat?.Dispose(); reviewRetry?.Dispose(); } catch { }
+        heartbeat = null; reviewRetry = null;
+        if (!Enabled) return;
         Clock.Stop();
         var payload = Build("close");
         try { Task.Run(() => SendAsync(payload, 2500)).Wait(3000); } catch { }
@@ -113,11 +131,15 @@ public static class UsageTracker
     // ───────────────────────── reviews ─────────────────────────
 
     /// <summary>Sends a review. Returns (true, "") on success or (false, message to show the user).</summary>
-    public static async Task<(bool Ok, string Error)> SubmitReviewAsync(int rating, string name, string message)
+    public readonly record struct ReviewSubmitResult(bool Ok, bool Pending, string Error);
+
+    /// <summary>Submits a review immediately, or saves it in the offline queue when the monitor cannot be reached.</summary>
+    public static async Task<ReviewSubmitResult> SubmitReviewAsync(int rating, string name, string message)
     {
         var payload = new Dictionary<string, object?>
         {
             ["event"] = "review",
+            ["review_id"] = Guid.NewGuid().ToString("N"),
             ["install_id"] = InstallId,
             ["version"] = AppInfo.Version,
             ["os"] = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
@@ -133,12 +155,34 @@ public static class UsageTracker
             req.Headers.TryAddWithoutValidation("X-Api-Key", ApiKey);
             using var res = await Http.SendAsync(req, cts.Token).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
-            if (res.IsSuccessStatusCode) return (true, "");
-            return (false, ServerError(body) ?? $"The server answered with an error ({(int)res.StatusCode}). Please try again later.");
+            if (res.IsSuccessStatusCode)
+            {
+                MarkReviewSubmitted(false);
+                return new ReviewSubmitResult(true, false, "");
+            }
+            if ((int)res.StatusCode >= 400 && (int)res.StatusCode < 500)
+                return new ReviewSubmitResult(false, false, ServerError(body) ?? $"The server answered with an error ({(int)res.StatusCode}). Please try again later.");
+
+            Enqueue(payload);
+            MarkReviewSubmitted(true);
+            return new ReviewSubmitResult(true, true, "");
         }
-        catch (TaskCanceledException) { return (false, "The server did not answer in time. Please try again in a moment."); }
-        catch (HttpRequestException) { return (false, "Could not reach the PDF Studio server. Check your internet connection and try again."); }
-        catch (Exception ex) { return (false, ex.Message); }
+        catch (TaskCanceledException)
+        {
+            Enqueue(payload); MarkReviewSubmitted(true);
+            return new ReviewSubmitResult(true, true, "");
+        }
+        catch (HttpRequestException)
+        {
+            Enqueue(payload); MarkReviewSubmitted(true);
+            return new ReviewSubmitResult(true, true, "");
+        }
+        catch
+        {
+            // Treat unexpected transport failures like an offline condition; the review must not be lost.
+            Enqueue(payload); MarkReviewSubmitted(true);
+            return new ReviewSubmitResult(true, true, "");
+        }
     }
 
     private static string? ServerError(string body)
@@ -196,30 +240,50 @@ public static class UsageTracker
 
     private static async Task FlushQueueAsync()
     {
-        string[] lines;
-        lock (Gate)
+        if (Interlocked.Exchange(ref flushingQueue, 1) != 0) return;
+        try
         {
-            try { lines = File.Exists(QueuePath) ? File.ReadAllLines(QueuePath) : Array.Empty<string>(); }
-            catch { return; }
-        }
-        if (lines.Length == 0) return;
-        var keep = new List<string>();
-        foreach (var line in lines)
-        {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            if (!await SendJsonAsync(line, 6000).ConfigureAwait(false)) keep.Add(line);
-        }
-        lock (Gate)
-        {
-            try
+            string[] lines;
+            lock (Gate)
             {
-                // anything queued while we were sending stays; only what was delivered is dropped
-                var now = File.Exists(QueuePath) ? File.ReadAllLines(QueuePath) : Array.Empty<string>();
-                var extra = now.Skip(lines.Length);
-                var left = keep.Concat(extra).ToList();
-                if (left.Count == 0) File.Delete(QueuePath); else File.WriteAllLines(QueuePath, left);
+                try { lines = File.Exists(QueuePath) ? File.ReadAllLines(QueuePath) : Array.Empty<string>(); }
+                catch { return; }
             }
-            catch { }
+            if (lines.Length == 0) return;
+            var keep = new List<string>();
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var delivered = await SendJsonAsync(line, 6000).ConfigureAwait(false);
+                if (!delivered)
+                {
+                    keep.Add(line);
+                    continue;
+                }
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    if (doc.RootElement.TryGetProperty("event", out var ev) && ev.GetString() == "review")
+                    {
+                        AppSettings.SetBool("review_pending", false);
+                        AppSettings.SetBool("review_completed", true);
+                    }
+                }
+                catch { }
+            }
+            lock (Gate)
+            {
+                try
+                {
+                    // anything queued while we were sending stays; only the original delivered entries are removed
+                    var now = File.Exists(QueuePath) ? File.ReadAllLines(QueuePath) : Array.Empty<string>();
+                    var extra = now.Skip(lines.Length);
+                    var left = keep.Concat(extra).ToList();
+                    if (left.Count == 0) File.Delete(QueuePath); else File.WriteAllLines(QueuePath, left);
+                }
+                catch { }
+            }
         }
+        finally { Volatile.Write(ref flushingQueue, 0); }
     }
 }

@@ -42,6 +42,7 @@ public sealed partial class MainForm : Form
     private string lastPreviewSig = "";
     private bool splitterInitialised;
     private bool hadPages;
+    private System.Windows.Forms.Timer? reviewPromptTimer;
 
     public MainForm()
     {
@@ -305,11 +306,20 @@ public sealed partial class MainForm : Form
         s.UseRole(() => Theme.Canvas);
         var card = new Surface { Width = 660, Height = 330, Padding = new Padding(28) };
         card.UseRole(() => Theme.Surface);
+        void RoundCard()
+        {
+            if (card.Width <= 0 || card.Height <= 0) return;
+            using var path = Gfx.Round(new RectangleF(0, 0, card.Width - 1, card.Height - 1), Theme.S(16));
+            card.Region = new Region(path);
+        }
+        card.Resize += (_, _) => RoundCard();
         card.Paint += (_, e) =>
         {
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            Gfx.DrawRound(e.Graphics, Theme.Border, new RectangleF(0.5f, 0.5f, card.Width - 2, card.Height - 2), 14, 2f);
+            Gfx.FillRound(e.Graphics, Theme.Surface, new RectangleF(0, 0, card.Width - 1, card.Height - 1), Theme.S(16));
+            Gfx.DrawRound(e.Graphics, Theme.Border, new RectangleF(0.5f, 0.5f, card.Width - 2, card.Height - 2), Theme.S(16), 1.2f);
         };
+        RoundCard();
         var icon = new Txt("\uE8E5", 30f) { Font = Theme.Icons(40f), ForeColor = Theme.Accent, Dock = DockStyle.Top, Height = 70, TextAlign = ContentAlignment.MiddleCenter };
         Theme.Changed += () => icon.ForeColor = Theme.Accent;
         var title = new Txt("Drop your files here", 17f, FontStyle.Bold) { Dock = DockStyle.Top, Height = 38, TextAlign = ContentAlignment.MiddleCenter };
@@ -405,6 +415,7 @@ public sealed partial class MainForm : Form
             ApplyPreviewVisibility();
             grid.Relayout();
             UsageTracker.Start();
+            ScheduleRandomReviewPrompt();
             if (UpdateService.AutoCheck)
             {
                 // quiet check a few seconds after start; nothing is shown unless a newer release exists
@@ -433,9 +444,27 @@ public sealed partial class MainForm : Form
             AppSettings.SetBool("autofit", grid.AutoFit);
             AppSettings.SetBool("preview", previewPref);
             UsageTracker.Stop();
+            try { reviewPromptTimer?.Stop(); reviewPromptTimer?.Dispose(); } catch { }
+            reviewPromptTimer = null;
             thumbs.Dispose();
             try { Directory.Delete(sessionDir, true); } catch { }
         };
+    }
+
+    /// <summary>Occasionally asks for a review without nagging the user. A submitted/queued review permanently opts the install out.</summary>
+    private void ScheduleRandomReviewPrompt()
+    {
+        if (UsageTracker.HasReviewed || Random.Shared.NextDouble() >= 0.125) return; // about one in eight sessions
+        reviewPromptTimer?.Stop();
+        reviewPromptTimer?.Dispose();
+        reviewPromptTimer = new System.Windows.Forms.Timer { Interval = 15000 };
+        reviewPromptTimer.Tick += (_, _) =>
+        {
+            reviewPromptTimer?.Stop();
+            if (IsDisposed || UsageTracker.HasReviewed || !Visible || ActiveForm != this) return;
+            ShowReview();
+        };
+        reviewPromptTimer.Start();
     }
 
     /// <summary>Opens at about 94 % of the usable screen (never larger than it), centred.</summary>

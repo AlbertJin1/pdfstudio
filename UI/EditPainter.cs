@@ -31,13 +31,80 @@ public static class EditPainter
 
     public static SizeF MeasureText(PageEditObject o)
     {
-        var lines = (o.Text ?? "").Replace("\r", "").Split('\n');
-        var size = Math.Max(4, o.FontSize);
-        double w = 0;
-        foreach (var l in lines)
-            w = Math.Max(w, TextMetrics.Advance(l.Length == 0 ? " " : l, o.FontName, size, o.Bold, o.Italic));
-        w *= HScaleOf(o);
-        return new SizeF((float)Math.Max(w, size * 0.5), (float)(lines.Length * size * 1.25));
+        var text = (o.Text ?? "").Replace("\r", "");
+        var lines = text.Split('\n');
+        if (lines.Length == 0) lines = new[] { "" };
+        var runs = NormalizedRuns(o);
+        double maxW = 0, totalH = 0;
+        var offset = 0;
+        foreach (var line in lines)
+        {
+            var lineLen = line.Length;
+            var lineRuns = RunsForRange(o, runs, offset, lineLen);
+            var x = 0.0;
+            var maxSize = Math.Max(4, o.FontSize);
+            foreach (var r in lineRuns)
+            {
+                var part = line.Substring(r.Start - offset, r.Length);
+                x += TextMetrics.Advance(part, r.FontName, Math.Max(4, r.FontSize), r.Bold, r.Italic);
+                maxSize = Math.Max(maxSize, r.FontSize);
+            }
+            maxW = Math.Max(maxW, x);
+            totalH += maxSize * 1.25;
+            offset += lineLen + 1;
+        }
+        maxW *= HScaleOf(o);
+        return new SizeF((float)Math.Max(maxW, Math.Max(4, o.FontSize) * 0.5), (float)Math.Max(totalH, Math.Max(4, o.FontSize) * 1.25));
+    }
+
+    private static List<TextStyleRun> NormalizedRuns(PageEditObject o)
+    {
+        var text = (o.Text ?? "").Replace("\r", "");
+        var n = text.Length;
+        var baseRun = new TextStyleRun
+        { Start = 0, Length = n, FontName = o.FontName, FontSize = o.FontSize,
+          Bold = o.Bold, Italic = o.Italic, Underline = o.Underline, ColorHex = o.ColorHex };
+        if (n == 0) return new List<TextStyleRun>();
+        var result = new List<TextStyleRun>();
+        foreach (var r0 in o.TextStyles.OrderBy(r => r.Start))
+        {
+            var a = Math.Clamp(r0.Start, 0, n);
+            var b = Math.Clamp(r0.Start + r0.Length, a, n);
+            if (b <= a) continue;
+            // Fill gaps from the object-level style.
+            if (result.Count == 0 && a > 0) result.Add(new TextStyleRun { Start = 0, Length = a, FontName = baseRun.FontName, FontSize = baseRun.FontSize, Bold = baseRun.Bold, Italic = baseRun.Italic, Underline = baseRun.Underline, ColorHex = baseRun.ColorHex });
+            else if (result.Count > 0 && result[^1].Start + result[^1].Length < a)
+            {
+                var st = result[^1].Start + result[^1].Length;
+                result.Add(new TextStyleRun { Start = st, Length = a - st, FontName = baseRun.FontName, FontSize = baseRun.FontSize, Bold = baseRun.Bold, Italic = baseRun.Italic, Underline = baseRun.Underline, ColorHex = baseRun.ColorHex });
+            }
+            var rr = r0.Clone(); rr.Start = a; rr.Length = b - a;
+            // Runs are expected to be ordered/non-overlapping; later data wins when legacy data overlaps.
+            if (result.Count > 0 && result[^1].Start + result[^1].Length > rr.Start)
+            {
+                var prev = result[^1];
+                if (prev.Start < rr.Start) prev.Length = rr.Start - prev.Start; else result.RemoveAt(result.Count - 1);
+            }
+            result.Add(rr);
+        }
+        if (result.Count == 0) result.Add(baseRun);
+        else if (result[^1].Start + result[^1].Length < n)
+        {
+            var st = result[^1].Start + result[^1].Length;
+            result.Add(new TextStyleRun { Start = st, Length = n - st, FontName = baseRun.FontName, FontSize = baseRun.FontSize, Bold = baseRun.Bold, Italic = baseRun.Italic, Underline = baseRun.Underline, ColorHex = baseRun.ColorHex });
+        }
+        return result;
+    }
+
+    private static List<TextStyleRun> RunsForRange(PageEditObject o, List<TextStyleRun> runs, int start, int length)
+    {
+        if (length <= 0) return new List<TextStyleRun>();
+        var end = start + length;
+        return runs.Where(r => r.Start < end && r.Start + r.Length > start).Select(r =>
+        {
+            var a = Math.Max(start, r.Start); var b = Math.Min(end, r.Start + r.Length);
+            var c = r.Clone(); c.Start = a; c.Length = b - a; return c;
+        }).ToList();
     }
 
     public static double HScaleOf(PageEditObject o) => o.HScale is > 0.2 and < 5 ? o.HScale : 1.0;
@@ -77,34 +144,53 @@ public static class EditPainter
     private static void DrawText(Graphics g, PageEditObject o)
     {
         if (string.IsNullOrEmpty(o.Text)) return;
-        var fam = TextMetrics.Family(o.FontName);
-        var style = TextMetrics.StyleFor(fam, o.Bold, o.Italic);
-        var size = (float)Math.Max(4, o.FontSize);
-        var lh = size * 1.25f;
-        var asc = (float)TextMetrics.Ascent(o.FontName, size, o.Bold, o.Italic);
+        var text = o.Text.Replace("\r", "");
+        var lines = text.Split('\n');
+        var runs = NormalizedRuns(o);
         var sx = (float)HScaleOf(o);
-        var lines = o.Text.Replace("\r", "").Split('\n');
-        using var brush = new SolidBrush(Parse(o.ColorHex, Color.Black));
-        using var fmt = (StringFormat)StringFormat.GenericTypographic.Clone();
-        fmt.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
-
+        var offset = 0;
         var state = g.Save();
         g.TranslateTransform((float)o.X, (float)o.Y);
         if (Math.Abs(sx - 1f) > 0.0005f) g.ScaleTransform(sx, 1f);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        for (var i = 0; i < lines.Length; i++)
+        using var fmt = (StringFormat)StringFormat.GenericTypographic.Clone();
+        fmt.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+
+        foreach (var line in lines)
         {
-            var line = lines[i];
-            if (line.Length == 0) continue;
-            using var path = new GraphicsPath(FillMode.Winding);
-            path.AddString(line, fam, (int)style, size, new PointF(0, i * lh), fmt);
-            g.FillPath(brush, path);
-            if (o.Underline)
+            var lineRuns = RunsForRange(o, runs, offset, line.Length);
+            float lineH = Math.Max(4f, (float)(lineRuns.Count == 0 ? o.FontSize : lineRuns.Max(r => r.FontSize))) * 1.25f;
+            var baseline = lineRuns.Count == 0 ? (float)TextMetrics.Ascent(o.FontName, o.FontSize, o.Bold, o.Italic) :
+                (float)lineRuns.Max(r => TextMetrics.Ascent(r.FontName, r.FontSize, r.Bold, r.Italic));
+            var x = 0f;
+            foreach (var r in lineRuns)
             {
-                var w = (float)TextMetrics.Advance(line, o.FontName, size, o.Bold, o.Italic);
-                var th = Math.Max(0.5f, size / 16f);
-                g.FillRectangle(brush, 0, i * lh + asc + size * 0.11f, w, th);
+                var local = Math.Max(0, r.Start - offset);
+                var len = Math.Min(r.Length, line.Length - local);
+                if (len <= 0) continue;
+                var part = line.Substring(local, len);
+                var fam = TextMetrics.Family(r.FontName);
+                var style = TextMetrics.StyleFor(fam, r.Bold, r.Italic);
+                var size = (float)Math.Max(4, r.FontSize);
+                using var brush = new SolidBrush(Parse(r.ColorHex, Color.Black));
+                // AddString's point is the line-box top; align all runs to the largest ascent so mixed font sizes behave like Word.
+                var st = g.Save();
+                g.TranslateTransform(x, baseline - (float)TextMetrics.Ascent(r.FontName, r.FontSize, r.Bold, r.Italic));
+                using var runPath = new GraphicsPath(FillMode.Winding);
+                runPath.AddString(part, fam, (int)style, size, PointF.Empty, fmt);
+                g.FillPath(brush, runPath);
+                if (r.Underline)
+                {
+                    var w = (float)TextMetrics.Advance(part, r.FontName, r.FontSize, r.Bold, r.Italic);
+                    var th = Math.Max(0.5f, size / 16f);
+                    g.FillRectangle(brush, 0, (float)TextMetrics.Ascent(r.FontName, r.FontSize, r.Bold, r.Italic) + size * 0.11f, w, th);
+                }
+                g.Restore(st);
+                x += (float)TextMetrics.Advance(part, r.FontName, r.FontSize, r.Bold, r.Italic);
             }
+            offset += line.Length + 1;
+            // line height is based on the largest run on that line.
+            if (offset <= text.Length) g.TranslateTransform(0f, lineH);
         }
         g.Restore(state);
     }

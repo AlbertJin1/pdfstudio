@@ -234,7 +234,7 @@ public static class PdfCompressor
         try
         {
             var s = d.Stream!;
-            if (!s.TryUnfilter() || s.Value is null) return;
+            if (!s.TryUncompress() || s.Value is null) return;
             var converted = GrayContent(s.Value);
             if (converted is not null) s.Value = converted;
             s.Zip();

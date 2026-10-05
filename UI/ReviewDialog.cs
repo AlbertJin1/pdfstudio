@@ -618,6 +618,7 @@ internal sealed class ThanksPanel : Control
 {
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 15 };
     private float t;
+    public bool Pending { get; set; }
 
     private static int S(int v) => Theme.S(v);
 
@@ -660,9 +661,13 @@ internal sealed class ThanksPanel : Control
         }
 
         var pad = S(48);
-        TextRenderer.DrawText(g, "Your review is in", Theme.Ui(13f, FontStyle.Bold), new Rectangle(pad, S(112), Width - pad * 2, S(30)), Theme.Text,
+        var title = Pending ? "Your review is saved" : "Your review is in";
+        var body = Pending
+            ? "Your review is safely queued and will be sent to the developer automatically when the internet connection returns."
+            : "It goes straight to the developer and helps shape the next version of PDF Studio.";
+        TextRenderer.DrawText(g, title, Theme.Ui(13f, FontStyle.Bold), new Rectangle(pad, S(112), Width - pad * 2, S(30)), Theme.Text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-        TextRenderer.DrawText(g, "It goes straight to the developer and helps shape the next version of PDF Studio.", Theme.Ui(9.5f),
+        TextRenderer.DrawText(g, body, Theme.Ui(9.5f),
             new Rectangle(pad, S(146), Width - pad * 2, S(60)), Theme.Muted,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
     }
@@ -704,8 +709,9 @@ public sealed class ReviewDialog : Form
     private int group = -1;
     private bool busy, errorShown;
 
-    /// <summary>True once the review reached the server (the caller shows its own confirmation).</summary>
+    /// <summary>True once the review was accepted for delivery (immediately or through the offline queue).</summary>
     public bool Sent { get; private set; }
+    public bool Pending { get; private set; }
 
     private static int S(int v) => Theme.S(v);
 
@@ -823,12 +829,13 @@ public sealed class ReviewDialog : Form
         if (tags.Length > 0) text = (text.Length > 0 ? text + "\n\nTags: " : "Tags: ") + string.Join(", ", tags);
 
         SetBusy(true);
-        (bool Ok, string Error) result;
+        UsageTracker.ReviewSubmitResult result;
         try { result = await UsageTracker.SubmitReviewAsync(hero.Value, nameBox.Input.Text.Trim(), text); }
-        catch (Exception ex) { result = (false, ex.Message); }
+        catch (Exception ex) { result = new UsageTracker.ReviewSubmitResult(false, false, ex.Message); }
         if (IsDisposed) return;
         SetBusy(false);
         if (!result.Ok) { SetStatus(result.Error, true); send.Focus(); return; }
+        Pending = result.Pending;
         await ShowThanksAsync();
     }
 
@@ -836,6 +843,7 @@ public sealed class ReviewDialog : Form
     {
         Sent = true;
         hero.Thanks = true;
+        thanks.Pending = Pending;
         body.Visible = false; thanks.Visible = true; thanks.Play();
         cancel.Visible = false;
         send.Glyph = "\uE73E"; send.Text = "Done"; send.DialogResult = DialogResult.OK;

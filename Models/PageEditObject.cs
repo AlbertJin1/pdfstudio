@@ -25,6 +25,9 @@ public sealed class PageEditObject
     public bool Underline { get; set; }
     public string ColorHex { get; set; } = "#000000";
 
+    /// <summary>Optional per-character formatting. Empty means the object-level text style applies to the whole text.</summary>
+    public List<TextStyleRun> TextStyles { get; set; } = new();
+
     /// <summary>
     /// Horizontal fit (1 = natural). Set when an existing PDF line is converted so the replacement font, which can have
     /// slightly different advance widths than the PDF's own font, spans exactly the width of the original line.
@@ -43,7 +46,12 @@ public sealed class PageEditObject
     /// <summary>Set on the cover + text pair created when an existing PDF text line is edited.</summary>
     public string Tag { get; set; } = string.Empty;
 
-    public PageEditObject Clone() => (PageEditObject)MemberwiseClone();
+    public PageEditObject Clone()
+    {
+        var c = (PageEditObject)MemberwiseClone();
+        c.TextStyles = TextStyles.Select(r => r.Clone()).ToList();
+        return c;
+    }
 
     public static string Hex(System.Drawing.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
 }

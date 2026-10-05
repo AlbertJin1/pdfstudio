@@ -732,7 +732,7 @@ public sealed partial class MainForm
     {
         using var dlg = new ReviewDialog();
         dlg.ShowDialog(this);
-        if (dlg.Sent) Notify("Thank you! Your review was sent.");
+        if (dlg.Sent) Notify(dlg.Pending ? "Thank you! Your review is saved and will be sent when the internet connection returns." : "Thank you! Your review was sent.");
     }
 
     private void ShowAbout()
