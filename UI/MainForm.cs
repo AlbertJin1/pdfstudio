@@ -19,7 +19,7 @@ public sealed partial class MainForm : Form
     private readonly Txt statusText = new("", 9f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private readonly Txt countText = new("", 9f, FontStyle.Bold) { AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left };
     private readonly ProgressBar busyBar = new() { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 28, Width = 120, Height = 8, Visible = false, Anchor = AnchorStyles.None };
-    private readonly TrackBar sizeBar = new() { Minimum = 100, Maximum = 340, Value = 170, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 26, SmallChange = 10, LargeChange = 30, Anchor = AnchorStyles.None };
+    private readonly ModernSlider sizeBar = new() { Minimum = 100, Maximum = 340, Value = 170, Width = 130, Height = 26, SmallChange = 10, LargeChange = 30, Anchor = AnchorStyles.None };
     private Control sizeGroupSep = null!;
     private TableLayoutPanel statusTable = null!, headerTable = null!;
     private readonly SplitContainer split = new() { Dock = DockStyle.Fill, FixedPanel = FixedPanel.None, SplitterWidth = 5 };
@@ -387,6 +387,7 @@ public sealed partial class MainForm : Form
         grid.StateChanged += (_, _) => { UpdateUi(); ShowPreview(false); };
         grid.ReorderRequested += OnReorder;
         grid.FilesDropped += (files, at) => Fire(AddFilesAsync(files, at));
+        grid.AddPdfRequested += () => Fire(AddPdfsFlow());
         grid.QuickRotate += p => Edit(() => p.Rotation = PdfService.Norm(p.Rotation + 90));
         grid.QuickDelete += p => Edit(() => pages.Remove(p));
         grid.PageOpened += p => { grid.SelectOnly(pages.IndexOf(p)); };

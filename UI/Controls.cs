@@ -202,9 +202,11 @@ public class FlatButton : Button
 
         if (Vertical)
         {
-            var total = gs.Height + (ts.Height > 0 ? 3 + ts.Height : 0);
-            var y = (Height - total) / 2 + (gs.Height > 0 ? lift : 0);
-            if (gs.Height > 0) { TextRenderer.DrawText(g, Glyph, iconFont, new Rectangle(0, y, Width, gs.Height), fg, flags | TextFormatFlags.HorizontalCenter); y += gs.Height + 3 - lift; }
+            // the icon always gets the same slot height, whatever font it is drawn in, so every caption lines up
+            var gh = Glyph.Length > 0 ? Theme.S(24) : 0;
+            var total = gh + (ts.Height > 0 ? 3 + ts.Height : 0);
+            var y = (Height - total) / 2 + (gh > 0 ? lift : 0);
+            if (gh > 0) { TextRenderer.DrawText(g, Glyph, iconFont, new Rectangle(0, y, Width, gh), fg, flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter); y += gh + 3 - lift; }
             if (ts.Height > 0)
             {
                 var tw = Math.Min(Width - 2, ts.Width + (chev.Width > 0 ? chev.Width + 3 : 0));
@@ -578,4 +580,109 @@ public class ModernCombo : ComboBox
     }
 
     private static void Round(ToolStripDropDown m) => Menus.Round(m);
+}
+
+/// <summary>
+/// Theme-aware slider that replaces the native TrackBar (which stays light grey / white in dark mode).
+/// Same members the app used on the TrackBar: Minimum, Maximum, Value, SmallChange, LargeChange, ValueChanged.
+/// Rounded track with an accent-filled part, round thumb that grows on hover / drag, keyboard and mouse-wheel support.
+/// </summary>
+public sealed class ModernSlider : Control
+{
+    private int min, max = 100, val;
+    private bool hover, drag;
+
+    public event EventHandler? ValueChanged;
+    public int SmallChange { get; set; } = 1;
+    public int LargeChange { get; set; } = 10;
+
+    public int Minimum { get => min; set { min = value; if (max < min) max = min; Value = val; Invalidate(); } }
+    public int Maximum { get => max; set { max = Math.Max(value, min); Value = val; Invalidate(); } }
+    public int Value
+    {
+        get => val;
+        set
+        {
+            var v = Math.Clamp(value, min, max);
+            if (v == val) return;
+            val = v; Invalidate(); ValueChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public ModernSlider()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        TabStop = true; Cursor = Cursors.Hand; Height = Theme.S(26); Width = Theme.S(130);
+        BackColor = Theme.Surface;                                                // sits on the status bar
+        AccessibleRole = AccessibleRole.Slider;
+        Theme.Changed += OnTheme;
+    }
+
+    protected override void Dispose(bool disposing) { if (disposing) Theme.Changed -= OnTheme; base.Dispose(disposing); }
+    private void OnTheme() { if (!IsDisposed) { BackColor = Theme.Surface; Invalidate(); } }
+
+    private float Pad => Theme.S(10);
+    private float Fraction => max > min ? (val - min) / (float)(max - min) : 0f;
+    private float ThumbX => Pad + Fraction * Math.Max(1, Width - Pad * 2);
+
+    private void SetFromX(int x)
+    {
+        var f = Math.Clamp((x - Pad) / Math.Max(1f, Width - Pad * 2), 0f, 1f);
+        Value = min + (int)Math.Round(f * (max - min));
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { hover = true; base.OnMouseEnter(e); Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; base.OnMouseLeave(e); Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+        Focus(); drag = true; Capture = true; SetFromX(e.X); Invalidate();
+    }
+    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (drag) SetFromX(e.X); }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); if (drag) { drag = false; Capture = false; Invalidate(); } }
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        Value += Math.Sign(e.Delta) * SmallChange;
+        if (e is HandledMouseEventArgs h) h.Handled = true;
+    }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown || base.IsInputKey(keyData);
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        switch (e.KeyCode)
+        {
+            case Keys.Left or Keys.Down: Value -= SmallChange; break;
+            case Keys.Right or Keys.Up: Value += SmallChange; break;
+            case Keys.PageDown: Value -= LargeChange; break;
+            case Keys.PageUp: Value += LargeChange; break;
+            case Keys.Home: Value = min; break;
+            case Keys.End: Value = max; break;
+            default: base.OnKeyDown(e); return;
+        }
+        e.Handled = true;
+    }
+
+    protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(Theme.Surface); g.SmoothingMode = SmoothingMode.AntiAlias;
+        var cy = Height / 2f; var th = Theme.S(4);
+        var x = ThumbX;
+        var on = Enabled;
+        var track = new RectangleF(Pad, cy - th / 2f, Width - Pad * 2, th);
+        Gfx.FillRound(g, Theme.Dark ? Color.FromArgb(70, 76, 90) : Color.FromArgb(206, 211, 222), track, th / 2f);
+        var accent = on ? Theme.Accent : Theme.Muted;
+        if (x > Pad) Gfx.FillRound(g, accent, new RectangleF(Pad, track.Y, x - Pad, th), th / 2f);
+
+        var r = Theme.S(drag ? 9 : hover ? 8 : 7);
+        if (drag || (Focused && ShowFocusCues))                                   // soft halo while dragging / keyboard focus
+            using (var halo = new SolidBrush(Color.FromArgb(Theme.Dark ? 70 : 55, accent))) g.FillEllipse(halo, x - r - Theme.S(4), cy - r - Theme.S(4), (r + Theme.S(4)) * 2, (r + Theme.S(4)) * 2);
+        using (var shadow = new SolidBrush(Color.FromArgb(Theme.Dark ? 90 : 40, 0, 0, 0))) g.FillEllipse(shadow, x - r, cy - r + Theme.S(1.5f), r * 2, r * 2);
+        using (var fill = new SolidBrush(Theme.Dark ? Color.FromArgb(240, 242, 248) : Color.White)) g.FillEllipse(fill, x - r, cy - r, r * 2, r * 2);
+        using (var ring = new Pen(accent, Theme.S(2.5f))) g.DrawEllipse(ring, x - r + Theme.S(1.2f), cy - r + Theme.S(1.2f), (r - Theme.S(1.2f)) * 2, (r - Theme.S(1.2f)) * 2);
+    }
 }

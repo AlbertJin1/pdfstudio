@@ -275,13 +275,17 @@ public sealed class ExportDialog : ModernDialog
     private readonly NumericUpDown wmAngle = Num(-90, 90, -35);
     private readonly ComboBox compression = MakeCombo(("None (keep original quality)", PdfCompression.None), ("Light — print quality", PdfCompression.Light),
         ("Balanced — good for email", PdfCompression.Balanced), ("Strong — smallest file", PdfCompression.Strong));
+    private readonly ComboBox compMode = MakeCombo(("Preset level", CompressionTargetKind.Preset), ("Reduce by a percentage", CompressionTargetKind.ReducePercent),
+        ("Reduce to a target size (MB)", CompressionTargetKind.TargetSize));
+    private readonly NumericUpDown reducePct = Num(1, 95, 50);
+    private readonly NumericUpDown targetMb = Num(0.05m, 4096m, 2m, 2, 0.5m);
     private readonly TextBox userPw = new() { UseSystemPasswordChar = true };
     private readonly TextBox ownerPw = new() { UseSystemPasswordChar = true };
     private readonly CheckBox allowPrint = new() { Text = "Allow printing", AutoSize = true, Checked = true };
     private readonly CheckBox allowCopy = new() { Text = "Allow copying text and images", AutoSize = true, Checked = true };
     private readonly CheckBox allowEdit = new() { Text = "Allow editing", AutoSize = true, Checked = true };
     private readonly Surface tabBar = new() { Dock = DockStyle.Fill, Height = 44 };
-    private readonly Panel host = new() { Dock = DockStyle.Fill, Height = 330 };
+    private readonly Panel host = new() { Dock = DockStyle.Fill, Height = 392 };
 
     public ExportOptions Result { get; private set; }
 
@@ -289,29 +293,31 @@ public sealed class ExportDialog : ModernDialog
     private readonly Txt layoutSummary = new("", 9.5f) { Height = 48 };
 
     public ExportDialog(ExportOptions current, int pageCount, string okText = "Export PDF", IReadOnlyList<PageItem>? pages = null)
-        : base("Export PDF", $"{pageCount} page(s) will be written in the exact order shown.", 720, okText)
+        : base("Export PDF", $"{pageCount} page(s) will be written in the exact order shown.", 780, okText)
     {
         o = current; Result = current;
         layout = current.Layout.Clone();
-        FixedBodyHeight = 44 + 338;
+        FixedBodyHeight = 52 + 14 + 392 + 6;
         tabBar.UseRole(() => Theme.Surface);
+        tabBar.BorderBottom = true;
 
-        var tabFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent };
+        var tabFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent, Padding = new Padding(0, 6, 0, 0) };
         tabBar.Controls.Add(tabFlow);
-        var r0 = NextRow(); Grid.Controls.Add(tabBar, 0, r0); Grid.SetColumnSpan(tabBar, 2); tabBar.Height = 44;
+        var r0 = NextRow(); Grid.Controls.Add(tabBar, 0, r0); Grid.SetColumnSpan(tabBar, 2); tabBar.Height = 52; tabBar.Margin = new Padding(0, 0, 0, 14);
         var r1 = NextRow(); Grid.Controls.Add(host, 0, r1); Grid.SetColumnSpan(host, 2);
-        Grid.RowStyles[r0] = new RowStyle(SizeType.Absolute, 44);
+        Grid.RowStyles[r0] = new RowStyle(SizeType.Absolute, 52 + 14);
         Grid.RowStyles[r1] = new RowStyle(SizeType.AutoSize);
 
         void Tab(string name, TableLayoutPanel page)
         {
-            page.Dock = DockStyle.Fill; page.Visible = false; host.Controls.Add(page);
-            var b = new FlatButton { Text = name, Kind = BtnKind.Ghost, Width = TextRenderer.MeasureText(name, Theme.Ui(9.5f)).Width + 30, Height = 34, Margin = new Padding(0, 4, 4, 4) };
+            page.Dock = DockStyle.Fill; page.Visible = false; page.Padding = new Padding(2, 0, 2, 0); host.Controls.Add(page);
+            var b = new FlatButton { Text = name, Kind = BtnKind.Ghost, Width = TextRenderer.MeasureText(name, Theme.Ui(9.5f)).Width + 30, Height = 36, Margin = new Padding(0, 0, 6, 0) };
             b.Click += (_, _) => ShowTab(page);
             tabFlow.Controls.Add(b); tabs.Add((b, page));
         }
 
-        Tab("Details", FormPage(("Title", title), ("Author", author), ("Subject", subject), ("Keywords", keywords)));
+        Tab("Details", FormPage("Document details", "Stored in the file properties. Shown by PDF readers and search tools.",
+            ("Title", title), ("Author", author), ("Subject", subject), ("Keywords", keywords)));
         var changeSize = new FlatButton { Text = "Choose page size…", Glyph = "\uE7C3", Kind = BtnKind.Secondary, Width = 220, Height = 36 };
         changeSize.Click += (_, _) =>
         {
@@ -319,21 +325,41 @@ public sealed class ExportDialog : ModernDialog
             if (d.ShowDialog(this) == DialogResult.OK) { layout = d.Result; UpdateLayoutSummary(); }
         };
         UpdateLayoutSummary();
-        Tab("Page size", FormPage(("", layoutSummary), ("", changeSize)));
-        Tab("Page numbers", FormPage(("", numbers), ("Position", numPos), ("Format", numFmt), ("Start at", numStart), ("Font size", numSize), ("", skipFirst)));
-        Tab("Watermark", FormPage(("", watermark), ("Text", wmText), ("Opacity %", wmOpacity), ("Font size", wmSize), ("Angle °", wmAngle)));
-        const bool gsFound = true;   // compression is built in
-        var compNote = new Txt("Built in, nothing to install. Pictures are re-encoded and streams are packed tighter; text stays sharp. The file is only replaced if it gets smaller.", 8.5f, FontStyle.Regular, true) { Height = 40 };
-        Tab("Compress & protect", FormPage(("Compression", compression), ("", grayscale), ("", compNote), ("Open password", userPw), ("Owner password", ownerPw),
-            ("", allowPrint), ("", allowCopy), ("", allowEdit)));
-        compression.Enabled = gsFound; grayscale.Enabled = gsFound;
+        Tab("Page size", FormPage("Page size", "Make every page the same size, or keep each page as it is.",
+            ("", layoutSummary), ("", changeSize)));
+        Tab("Page numbers", FormPage("Page numbers", "Stamp a number on each page when the file is written.",
+            ("", numbers), ("Position", numPos), ("Format", numFmt), ("Start at", numStart), ("Font size", numSize), ("", skipFirst)));
+        Tab("Watermark", FormPage("Text watermark", "A faint diagonal label across every page, such as CONFIDENTIAL or DRAFT.",
+            ("", watermark), ("Text", wmText), ("Opacity (%)", wmOpacity), ("Font size", wmSize), ("Angle (°)", wmAngle)));
+        var compNote = new Txt("Built in, nothing to install. Percentage and target size are measured against the file as it would be saved without compression: pictures are re-encoded as gently as possible to reach the goal, and text stays sharp. If a target is too small to reach (mostly-text files), you are told.", 8.5f, FontStyle.Regular, true) { Height = 72 };
+        var secNote = new Txt("Permissions are enforced only when an owner password is set.", 8.5f, FontStyle.Regular, true) { Height = 22 };
+        Tab("Compress", FormPage("Compress", "Make the file smaller: pick a preset, a percentage, or an exact size limit.",
+            ("Method", compMode), ("Preset level", compression), ("Make it smaller by (%)", reducePct), ("Keep it under (MB)", targetMb),
+            ("", grayscale), ("", compNote)));
+        Tab("Protect", FormPage("Password protection", "Lock the file with a password and choose what readers may do.",
+            ("Open password", userPw), ("Owner password", ownerPw),
+            ("", secNote), ("", allowPrint), ("", allowCopy), ("", allowEdit)));
 
-        title.Text = o.Title; author.Text = o.Author; subject.Text = o.Subject; keywords.Text = o.Keywords; grayscale.Checked = gsFound && o.Grayscale; numbers.Checked = o.PageNumbers; SelectValue(numPos, o.NumberPosition);
+        title.Text = o.Title; author.Text = o.Author; subject.Text = o.Subject; keywords.Text = o.Keywords; grayscale.Checked = o.Grayscale; numbers.Checked = o.PageNumbers; SelectValue(numPos, o.NumberPosition);
         SelectValue(numFmt, o.NumberFormat); numStart.Value = Math.Clamp(o.StartNumber, 0, 9999); numSize.Value = (decimal)Math.Clamp(o.NumberFontSize, 6, 40);
         skipFirst.Checked = o.SkipFirstPage; watermark.Checked = o.Watermark; wmText.Text = o.WatermarkText;
         wmOpacity.Value = Math.Clamp(o.WatermarkOpacityPercent, 3, 100); wmSize.Value = (decimal)Math.Clamp(o.WatermarkFontSize, 10, 300);
-        wmAngle.Value = (decimal)Math.Clamp(o.WatermarkAngle, -90, 90); SelectValue(compression, gsFound ? o.Compression : PdfCompression.None);
+        wmAngle.Value = (decimal)Math.Clamp(o.WatermarkAngle, -90, 90); SelectValue(compression, o.Compression);
+        SelectValue(compMode, o.CompressionKind); reducePct.Value = Math.Clamp(o.ReducePercent, 1, 95); targetMb.Value = (decimal)Math.Clamp(o.TargetSizeMb, 0.05, 4096);
         allowPrint.Checked = o.AllowPrint; allowCopy.Checked = o.AllowCopy; allowEdit.Checked = o.AllowEdit;
+        void SyncEnabled()
+        {
+            foreach (var c in new Control[] { numPos, numFmt, numStart, numSize, skipFirst }) c.Enabled = numbers.Checked;
+            foreach (var c in new Control[] { wmText, wmOpacity, wmSize, wmAngle }) c.Enabled = watermark.Checked;
+            var kind = ValueOf<CompressionTargetKind>(compMode);
+            compression.Enabled = kind == CompressionTargetKind.Preset;
+            reducePct.Enabled = kind == CompressionTargetKind.ReducePercent;
+            targetMb.Enabled = kind == CompressionTargetKind.TargetSize;
+        }
+        compMode.SelectedIndexChanged += (_, _) => SyncEnabled();
+        numbers.CheckedChanged += (_, _) => SyncEnabled();
+        watermark.CheckedChanged += (_, _) => SyncEnabled();
+        SyncEnabled();
         ShowTab(tabs[0].Page);
         StretchTarget = host;
     }
@@ -355,20 +381,46 @@ public sealed class ExportDialog : ModernDialog
         layoutSummary.Text = "All pages will be " + PageSizing.Name(layout) + "  ·  " + orient + "\nPages of other sizes are fitted: " + fitText + ".";
     }
 
-    private static TableLayoutPanel FormPage(params (string Label, Control Ctl)[] rows)
+    /// <summary>
+    /// One settings page: heading, short description, then label/control rows. The final row is a stretchy filler so the
+    /// real rows keep their natural height instead of being spread over the whole page (which scattered the labels).
+    /// </summary>
+    private static TableLayoutPanel FormPage(string heading, string blurb, params (string Label, Control Ctl)[] rows)
     {
-        var t = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = Color.Transparent };
-        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
-        foreach (var (label, ctl) in rows)
+        var t = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
+
+        void Full(Control c, int top, int bottom)
         {
             var r = t.RowCount++;
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            ctl.Margin = new Padding(0, 4, 0, 4);
-            if (label.Length == 0) { t.Controls.Add(ctl, 0, r); t.SetColumnSpan(ctl, 2); if (ctl is Txt) ctl.Dock = DockStyle.Fill; continue; }
-            t.Controls.Add(new Txt(label) { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 8, 6), ForeColor = Theme.Muted, Muted = true }, 0, r);
-            ctl.Dock = DockStyle.Fill; t.Controls.Add(ctl, 1, r);
+            c.Margin = new Padding(0, top, 0, bottom);
+            t.Controls.Add(c, 0, r); t.SetColumnSpan(c, 2);
         }
+
+        Full(new Txt(heading, 11.5f, FontStyle.Bold) { AutoSize = true }, 0, 2);
+        Full(new Txt(blurb, 9f, FontStyle.Regular, true) { AutoSize = true }, 0, 12);
+
+        foreach (var (label, ctl) in rows)
+        {
+            if (label.Length == 0)
+            {
+                if (ctl is Txt tx) { tx.Dock = DockStyle.Top; Full(tx, 2, 4); }
+                else { ctl.Anchor = AnchorStyles.Left | AnchorStyles.Top; Full(ctl, 4, 4); }
+                continue;
+            }
+            var r = t.RowCount++;
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var lab = new Txt(label) { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 12, 6), ForeColor = Theme.Muted, Muted = true };
+            t.Controls.Add(lab, 0, r);
+            ctl.Margin = new Padding(0, 5, 0, 5);
+            if (ctl is NumericUpDown) { ctl.Anchor = AnchorStyles.Left; ctl.Width = Theme.S(120); }
+            else ctl.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            t.Controls.Add(ctl, 1, r);
+        }
+        t.RowCount++;
+        t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         return t;
     }
 
@@ -388,7 +440,8 @@ public sealed class ExportDialog : ModernDialog
             StartNumber = (int)numStart.Value, NumberFontSize = (double)numSize.Value, SkipFirstPage = skipFirst.Checked,
             Watermark = watermark.Checked, WatermarkText = wmText.Text.Trim(), WatermarkOpacityPercent = (int)wmOpacity.Value,
             WatermarkFontSize = (double)wmSize.Value, WatermarkAngle = (double)wmAngle.Value,
-            Compression = ValueOf<PdfCompression>(compression),
+            Compression = ValueOf<PdfCompression>(compression), CompressionKind = ValueOf<CompressionTargetKind>(compMode),
+            ReducePercent = (int)reducePct.Value, TargetSizeMb = (double)targetMb.Value,
             UserPassword = userPw.Text, OwnerPassword = ownerPw.Text,
             AllowPrint = allowPrint.Checked, AllowCopy = allowCopy.Checked, AllowEdit = allowEdit.Checked,
             Layout = layout.Clone()

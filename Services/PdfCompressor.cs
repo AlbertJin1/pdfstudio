@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
+using System.IO.Compression;
 using System.Text;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Advanced;
@@ -10,89 +11,286 @@ using PdfStudio.Models;
 
 namespace PdfStudio.Services;
 
+/// <summary>What the compressor achieved. <see cref="Target"/> is 0 for the fixed presets.</summary>
+public sealed record CompressionReport(long Before, long After, long Target, bool Reached, string Summary);
+
 /// <summary>
-/// Built-in PDF compression and grayscale conversion. Needs nothing installed: it re-encodes the pictures inside the
-/// PDF (JPEG at a chosen quality, optionally scaled down), Flate-compresses every stream that is stored uncompressed,
-/// and for grayscale also rewrites colour operators in page content. Text and vector art are never rasterised.
+/// Built-in PDF compression. Needs nothing installed. Three ways to ask for it:
+///   • a preset (Light / Balanced / Strong),
+///   • "reduce by N %" (the target is N % smaller than the file before compression),
+///   • "reduce to X MB" (an exact size cap).
+/// For the last two the compressor searches a ladder of 32 steps from gentle (JPEG quality 92, big pictures) to harsh
+/// (quality 10, small pictures). It measures what every step would produce, picks the gentlest step that meets the
+/// target, writes the file and checks the real size, stepping further down if it is still over. Text and vector art
+/// are never rasterised, so only pictures lose quality. If even the harshest step cannot reach the target (a PDF that is
+/// mostly text and fonts) the best result is kept and the report says so.
 /// </summary>
 public static class PdfCompressor
 {
-    private sealed record Profile(int Quality, int MaxDim, long MinBytes);
+    private readonly record struct Rung(int Quality, int MaxDim);
 
-    private static Profile ProfileFor(PdfCompression level) => level switch
+    private sealed class Rendered { public byte[]? Jpg; public int W, H; }
+
+    private sealed class Pic
     {
-        PdfCompression.Light => new Profile(85, 3500, 8_000),     // ~300 dpi on A4
-        PdfCompression.Strong => new Profile(45, 1240, 2_000),    // ~100 dpi on A4
-        PdfCompression.Balanced => new Profile(70, 1800, 4_000),  // ~150 dpi on A4
-        _ => new Profile(90, int.MaxValue, 8_000)                  // None: only used for grayscale
+        public PdfDictionary Dict = null!;
+        public byte[] Data = null!;
+        public bool IsJpeg;
+        public int W, H, Comps, Predictor;
+        public long OrigLen => Data.Length;
+    }
+
+    private const int RungCount = 32;
+    private static readonly Rung[] Ladder = BuildLadder();
+
+    private static Rung[] BuildLadder()
+    {
+        var l = new Rung[RungCount];
+        for (var i = 0; i < RungCount; i++)
+        {
+            var t = i / (double)(RungCount - 1);
+            l[i] = new Rung((int)Math.Round(92 - t * 82), (int)Math.Round(3600 * Math.Pow(0.10, t)));   // q92/3600px → q10/360px
+        }
+        return l;
+    }
+
+    private static (Rung Rung, long MinBytes) PresetFor(PdfCompression level) => level switch
+    {
+        PdfCompression.Light => (new Rung(85, 3500), 8_000),     // ~300 dpi on A4
+        PdfCompression.Strong => (new Rung(45, 1240), 2_000),    // ~100 dpi on A4
+        PdfCompression.Balanced => (new Rung(70, 1800), 4_000),  // ~150 dpi on A4
+        _ => (new Rung(90, int.MaxValue), 8_000)                  // None: grayscale only
     };
 
-    /// <summary>Compresses the PDF in place. Returns (before, after) sizes in bytes. The file is only replaced if it got smaller (or when grayscale was requested).</summary>
-    public static (long Before, long After) Compress(string path, PdfCompression level, bool grayscale = false)
+    private static int Dop => Math.Clamp(Environment.ProcessorCount - 1, 1, 8);
+
+    public static CompressionReport Compress(string path, ExportOptions o) =>
+        Compress(path, o.CompressionKind, o.Compression, o.ReducePercent, o.TargetSizeMb, o.Grayscale);
+
+    /// <summary>Compresses the PDF in place. The file is only replaced when the result is smaller (or when grayscale was requested).</summary>
+    public static CompressionReport Compress(string path, CompressionTargetKind kind, PdfCompression level, int reducePercent, double targetMb, bool grayscale)
     {
         var before = new FileInfo(path).Length;
-        if (level == PdfCompression.None && !grayscale) return (before, before);
-        var temp = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, $"~cmp_{Guid.NewGuid():N}.pdf");
+        var targeted = kind != CompressionTargetKind.Preset;
+        if (!targeted && level == PdfCompression.None && !grayscale) return new(before, before, 0, true, "");
+
+        long target = 0;
+        if (kind == CompressionTargetKind.ReducePercent) target = (long)(before * (1.0 - Math.Clamp(reducePercent, 1, 99) / 100.0));
+        else if (kind == CompressionTargetKind.TargetSize) target = (long)(Math.Max(0.01, targetMb) * 1024 * 1024);
+        if (targeted && target >= before && !grayscale)
+            return new(before, before, target, true, $"The file ({Fmt(before)}) is already within the target ({Fmt(target)}), so it was left as it is.");
+
+        var dir = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        var id = Guid.NewGuid().ToString("N");
+        var s0 = Path.Combine(dir, $"~cmp_{id}_a.pdf");
+        var s1 = Path.Combine(dir, $"~cmp_{id}_b.pdf");
         try
         {
-            var prof = ProfileFor(level);
-            using (var doc = PdfReader.Open(path, PdfDocumentOpenMode.Modify))
+            Stage0(path, s0, grayscale);
+            var s0Size = new FileInfo(s0).Length;
+            string produced = s0; long producedSize = s0Size;
+
+            if (!targeted)
             {
-                var done = new HashSet<int>();
-                foreach (var obj in doc.Internals.GetAllObjects())
+                if (level != PdfCompression.None || grayscale)
                 {
-                    if (obj is not PdfDictionary d || d.Stream is null) continue;
-                    try
+                    var (rung, minBytes) = PresetFor(level);
+                    var size = WriteWithRung(s0, s1, rung, grayscale, minBytes);
+                    if (size > 0) { produced = s1; producedSize = size; }
+                }
+            }
+            else
+            {
+                const long minBytes = 2_000;
+                var goal = (long)(target * 0.995);
+                int chosen;
+                if (!grayscale && s0Size <= goal) chosen = -1;                      // lossless tidy-up was already enough
+                else chosen = ChooseRung(s0, goal, grayscale, minBytes, s0Size);
+                if (chosen >= 0)
+                {
+                    var rung = chosen;
+                    for (var attempt = 0; attempt < 5; attempt++)
                     {
-                        if (Name(d, "/Subtype") == "/Image")
-                        {
-                            if (done.Add(obj.GetHashCode())) RecompressImage(d, prof, grayscale);
-                        }
+                        var size = WriteWithRung(s0, s1, Ladder[rung], grayscale, minBytes);
+                        if (size <= 0) break;
+                        produced = s1; producedSize = size;
+                        if (size <= target || rung >= RungCount - 1) break;
+                        rung = Math.Min(RungCount - 1, rung + attempt + 1);          // estimate was a little optimistic: go harsher
                     }
-                    catch { /* leave this picture untouched */ }
                 }
-
-                if (grayscale)
-                {
-                    foreach (var page in doc.Pages) GrayStreamsOf(page);
-                    foreach (var obj in doc.Internals.GetAllObjects())
-                        if (obj is PdfDictionary d && d.Stream is not null && Name(d, "/Subtype") == "/Form") GrayStream(d);
-                }
-
-                // Flate-compress anything still stored raw (fonts, ICC profiles, form content, ...).
-                foreach (var obj in doc.Internals.GetAllObjects())
-                {
-                    if (obj is not PdfDictionary d || d.Stream?.Value is not { Length: > 64 }) continue;
-                    if (d.Elements.ContainsKey("/Filter") || Name(d, "/Type") == "/XRef") continue;
-                    try { d.Stream.Zip(); } catch { }
-                }
-                doc.Save(temp);
             }
 
-            var after = new FileInfo(temp).Length;
-            if (after > 0 && (grayscale || after < before)) { File.Copy(temp, path, true); return (before, after); }
+            var replace = producedSize > 0 && (grayscale || producedSize < before);
+            if (replace) File.Copy(produced, path, true);
+            var after = replace ? producedSize : before;
+            return Report(before, after, target, kind, level);
         }
-        catch { }
-        finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
-        return (before, before);
+        catch { return new(before, before, target, false, "Compression failed, so the file was left as it is."); }
+        finally
+        {
+            foreach (var f in new[] { s0, s1 }) try { if (File.Exists(f)) File.Delete(f); } catch { }
+        }
+    }
+
+    private static CompressionReport Report(long before, long after, long target, CompressionTargetKind kind, PdfCompression level)
+    {
+        var pct = before > 0 ? 100.0 * (before - after) / before : 0;
+        var change = after < before ? $"{Fmt(before)} → {Fmt(after)} ({pct:0}% smaller)" : $"stayed at {Fmt(before)} (nothing more could be saved)";
+        if (kind == CompressionTargetKind.Preset) return new(before, after, 0, true, "Compression: " + change + ".");
+        if (after <= target) return new(before, after, target, true, "Compression: " + change + ".");
+        return new(before, after, target, false,
+            $"The target of {Fmt(target)} could not be reached: the file went {change}. The rest is text, fonts and drawings, which compression cannot shrink without losing content. Try a larger target.");
+    }
+
+    private static string Fmt(long b) => b >= 1024 * 1024 ? (b / 1048576.0).ToString("0.##", CultureInfo.InvariantCulture) + " MB" : Math.Max(1, b / 1024) + " KB";
+
+    // ───────────────────────── stages ─────────────────────────
+
+    /// <summary>Lossless step: grayscale for page content (when asked), then Flate-compress every stream still stored raw (pictures included).</summary>
+    private static void Stage0(string src, string dst, bool grayscale)
+    {
+        using var doc = PdfReader.Open(src, PdfDocumentOpenMode.Modify);
+        if (grayscale)
+        {
+            foreach (var page in doc.Pages) GrayStreamsOf(page);
+            foreach (var obj in doc.Internals.GetAllObjects())
+                if (obj is PdfDictionary d && d.Stream is not null && Name(d, "/Subtype") == "/Form") GrayStream(d);
+        }
+        foreach (var obj in doc.Internals.GetAllObjects())
+        {
+            if (obj is not PdfDictionary d || d.Stream?.Value is not { Length: > 64 }) continue;
+            if (d.Elements.ContainsKey("/Filter") || Name(d, "/Type") == "/XRef") continue;
+            try { d.Stream.Zip(); } catch { }
+        }
+        doc.Save(dst);
+    }
+
+    /// <summary>Finds the gentlest ladder step whose estimated file size is within <paramref name="goal"/> (binary search). Returns the harshest step if none is.</summary>
+    private static int ChooseRung(string s0, long goal, bool gray, long minBytes, long s0Size)
+    {
+        using var doc = PdfReader.Open(s0, PdfDocumentOpenMode.Modify);
+        var pics = Collect(doc, gray, minBytes);
+        if (pics.Count == 0) return RungCount - 1;
+        long orig = 0; foreach (var p in pics) orig += p.OrigLen;
+        int lo = 0, hi = RungCount - 1, best = RungCount - 1;
+        while (lo <= hi)
+        {
+            var mid = (lo + hi) / 2;
+            var est = s0Size - orig + EstimatePictures(pics, Ladder[mid], gray);
+            if (est <= goal) { best = mid; hi = mid - 1; } else lo = mid + 1;
+        }
+        return best;
+    }
+
+    /// <summary>Opens the lossless file fresh, re-encodes its pictures at the given step, saves, and returns the new size (0 on failure).</summary>
+    private static long WriteWithRung(string s0, string dst, Rung rung, bool gray, long minBytes)
+    {
+        using (var doc = PdfReader.Open(s0, PdfDocumentOpenMode.Modify))
+        {
+            var pics = Collect(doc, gray, minBytes);
+            ApplyPictures(pics, rung, gray);
+            doc.Save(dst);
+        }
+        return File.Exists(dst) ? new FileInfo(dst).Length : 0;
     }
 
     // ───────────────────────── pictures ─────────────────────────
 
-    private static void RecompressImage(PdfDictionary d, Profile prof, bool gray)
+    private static List<Pic> Collect(PdfDocument doc, bool gray, long minBytes)
     {
-        if (Bool(d, "/ImageMask") || d.Elements.ContainsKey("/Mask") || d.Elements.ContainsKey("/Decode") || d.Elements.ContainsKey("/SMaskInData")) return;
-        var filter = FilterOf(d);
-        if (filter != "/DCTDecode" && filter != "/FlateDecode" && filter != "") return;
-        var w = d.Elements.GetInteger("/Width"); var h = d.Elements.GetInteger("/Height");
-        if (w < 8 || h < 8 || (long)w * h > 120_000_000L) return;
-        var comps = Components(d);
-        if (comps == 0) return;
-        var original = d.Stream!.Value;
-        if (original is null || original.Length < prof.MinBytes && !gray) return;
+        var list = new List<Pic>();
+        foreach (var obj in doc.Internals.GetAllObjects())
+        {
+            if (obj is not PdfDictionary d || d.Stream is null) continue;
+            try
+            {
+                if (Name(d, "/Subtype") != "/Image") continue;
+                var p = MakePic(d, gray, minBytes);
+                if (p is not null) list.Add(p);
+            }
+            catch { /* leave this picture untouched */ }
+        }
+        return list;
+    }
 
-        using Bitmap src = filter == "/DCTDecode" ? DecodeJpeg(original) : DecodeRaw(d, w, h, comps);
-        var scale = Math.Min(1.0, (double)prof.MaxDim / Math.Max(src.Width, src.Height));
+    private static Pic? MakePic(PdfDictionary d, bool gray, long minBytes)
+    {
+        if (Bool(d, "/ImageMask") || d.Elements.ContainsKey("/Mask") || d.Elements.ContainsKey("/Decode") || d.Elements.ContainsKey("/SMaskInData")) return null;
+        var filter = FilterOf(d);
+        if (filter != "/DCTDecode" && filter != "/FlateDecode") return null;
+        var w = d.Elements.GetInteger("/Width"); var h = d.Elements.GetInteger("/Height");
+        if (w < 8 || h < 8 || (long)w * h > 150_000_000L) return null;
+        var comps = Components(d);
+        if (comps == 0) return null;
+        var data = d.Stream!.Value;
+        if (data is null || data.Length == 0) return null;
+        if (!gray && data.Length < minBytes) return null;
+
+        var pic = new Pic { Dict = d, Data = data, IsJpeg = filter == "/DCTDecode", W = w, H = h, Comps = comps };
+        if (!pic.IsJpeg)
+        {
+            if (d.Elements.GetInteger("/BitsPerComponent") != 8) return null;
+            var pd = Parms(d);
+            if (pd is not null)
+            {
+                pic.Predictor = pd.Elements.GetInteger("/Predictor");
+                if (pic.Predictor > 1)
+                {
+                    var colors = pd.Elements.GetInteger("/Colors"); if (colors == 0) colors = 1;
+                    var cols = pd.Elements.GetInteger("/Columns"); if (cols == 0) cols = 1;
+                    var bpc = pd.Elements.GetInteger("/BitsPerComponent"); if (bpc == 0) bpc = 8;
+                    if (colors != comps || cols != w || bpc != 8) return null;
+                }
+            }
+        }
+        return pic;
+    }
+
+    private static long EstimatePictures(List<Pic> pics, Rung rung, bool gray)
+    {
+        var sizes = new long[pics.Count];
+        Parallel.For(0, pics.Count, new ParallelOptions { MaxDegreeOfParallelism = Dop }, i =>
+        {
+            var p = pics[i];
+            try
+            {
+                var r = Render(p, rung, gray);
+                sizes[i] = r.Jpg is null ? p.OrigLen : gray ? r.Jpg.Length : Math.Min(p.OrigLen, r.Jpg.Length);
+            }
+            catch { sizes[i] = p.OrigLen; }
+        });
+        long total = 0; foreach (var s in sizes) total += s;
+        return total;
+    }
+
+    private static void ApplyPictures(List<Pic> pics, Rung rung, bool gray)
+    {
+        var results = new Rendered?[pics.Count];
+        Parallel.For(0, pics.Count, new ParallelOptions { MaxDegreeOfParallelism = Dop }, i =>
+        {
+            try { results[i] = Render(pics[i], rung, gray); } catch { results[i] = null; }
+        });
+        for (var i = 0; i < pics.Count; i++)
+        {
+            var r = results[i]; var p = pics[i];
+            if (r?.Jpg is null) continue;
+            if (!gray && r.Jpg.Length >= p.OrigLen) continue;      // never make a picture bigger
+            var d = p.Dict;
+            d.Stream!.Value = r.Jpg;
+            d.Elements.SetName("/Filter", "/DCTDecode");
+            d.Elements.Remove("/DecodeParms");
+            d.Elements.Remove("/DP");
+            d.Elements.SetInteger("/Width", r.W); d.Elements.SetInteger("/Height", r.H);
+            d.Elements.SetName("/ColorSpace", "/DeviceRGB");
+            d.Elements.SetInteger("/BitsPerComponent", 8);
+        }
+    }
+
+    /// <summary>Decodes, scales down (never up) and JPEG-encodes one picture. Pure function: safe to run on several threads.</summary>
+    private static Rendered Render(Pic p, Rung rung, bool gray)
+    {
+        using Bitmap src = p.IsJpeg ? DecodeJpeg(p.Data) : DecodeRaw(p);
+        var scale = Math.Min(1.0, (double)rung.MaxDim / Math.Max(src.Width, src.Height));
         var nw = Math.Max(1, (int)Math.Round(src.Width * scale)); var nh = Math.Max(1, (int)Math.Round(src.Height * scale));
         using var dst = new Bitmap(nw, nh, PixelFormat.Format24bppRgb);
         dst.SetResolution(96, 96);
@@ -114,16 +312,7 @@ public static class PdfCompressor
             }
             g.DrawImage(src, new Rectangle(0, 0, nw, nh), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
         }
-
-        var jpg = EncodeJpeg(dst, prof.Quality);
-        if (!gray && jpg.Length >= original.Length) return;
-
-        d.Stream.Value = jpg;
-        d.Elements.SetName("/Filter", "/DCTDecode");
-        d.Elements.Remove("/DecodeParms");
-        d.Elements.SetInteger("/Width", nw); d.Elements.SetInteger("/Height", nh);
-        d.Elements.SetName("/ColorSpace", "/DeviceRGB");
-        d.Elements.SetInteger("/BitsPerComponent", 8);
+        return new Rendered { Jpg = EncodeJpeg(dst, rung.Quality), W = nw, H = nh };
     }
 
     private static Bitmap DecodeJpeg(byte[] data)
@@ -138,12 +327,13 @@ public static class PdfCompressor
         return bmp;
     }
 
-    private static Bitmap DecodeRaw(PdfDictionary d, int w, int h, int comps)
+    /// <summary>Flate picture: inflate, undo the PNG/TIFF predictor if there is one, build a 24-bit bitmap.</summary>
+    private static Bitmap DecodeRaw(Pic p)
     {
-        if (d.Elements.GetInteger("/BitsPerComponent") != 8) throw new NotSupportedException();
-        if (HasPredictor(d)) throw new NotSupportedException();
-        var raw = d.Stream!.UnfilteredValue;
-        if (raw is null || raw.Length < (long)w * h * comps) throw new InvalidDataException();
+        int w = p.W, h = p.H, comps = p.Comps;
+        var raw = Inflate(p.Data);
+        if (p.Predictor > 1) raw = Unpredict(raw, p.Predictor, comps, w, h);
+        if (raw.Length < (long)w * h * comps) throw new InvalidDataException();
         var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
         var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
         try
@@ -164,6 +354,64 @@ public static class PdfCompressor
         return bmp;
     }
 
+    private static byte[] Inflate(byte[] data)
+    {
+        using var input = new MemoryStream(data);
+        using var z = new ZLibStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        try { z.CopyTo(output); }
+        catch (InvalidDataException) { if (output.Length == 0) throw; }   // truncated tail: keep what decoded
+        return output.ToArray();
+    }
+
+    private static byte[] Unpredict(byte[] s, int predictor, int colors, int columns, int height)
+    {
+        var bpp = Math.Max(1, colors);                  // 8 bits per component, so bytes per pixel == colours
+        var rowLen = colors * columns;
+        if (predictor == 2)                             // TIFF: each byte is stored as the difference from the pixel to its left
+        {
+            for (var y = 0; y < height; y++)
+            {
+                var o = y * rowLen;
+                if (o + rowLen > s.Length) break;
+                for (var i = bpp; i < rowLen; i++) s[o + i] = (byte)(s[o + i] + s[o + i - bpp]);
+            }
+            return s;
+        }
+        var stride = rowLen + 1;                        // PNG: one filter-type byte in front of every row
+        var res = new byte[(long)rowLen * height];
+        for (var y = 0; y < height; y++)
+        {
+            var si = y * stride;
+            if (si + stride > s.Length) throw new InvalidDataException();
+            int ft = s[si], src = si + 1, dst = y * rowLen, prev = dst - rowLen;
+            for (var i = 0; i < rowLen; i++)
+            {
+                int x = s[src + i];
+                int a = i >= bpp ? res[dst + i - bpp] : 0;
+                int b = y > 0 ? res[prev + i] : 0;
+                int c = y > 0 && i >= bpp ? res[prev + i - bpp] : 0;
+                switch (ft)
+                {
+                    case 0: break;
+                    case 1: x += a; break;
+                    case 2: x += b; break;
+                    case 3: x += (a + b) / 2; break;
+                    case 4: x += Paeth(a, b, c); break;
+                    default: throw new InvalidDataException();
+                }
+                res[dst + i] = (byte)x;
+            }
+        }
+        return res;
+    }
+
+    private static int Paeth(int a, int b, int c)
+    {
+        var p = a + b - c; var pa = Math.Abs(p - a); var pb = Math.Abs(p - b); var pc = Math.Abs(p - c);
+        return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    }
+
     private static byte[] EncodeJpeg(Bitmap bmp, int quality)
     {
         var codec = ImageCodecInfo.GetImageEncoders().First(c => c.MimeType == "image/jpeg");
@@ -172,6 +420,13 @@ public static class PdfCompressor
         using var ms = new MemoryStream();
         bmp.Save(ms, codec, ep);
         return ms.ToArray();
+    }
+
+    private static PdfDictionary? Parms(PdfDictionary d)
+    {
+        var p = Resolve(d.Elements["/DecodeParms"]) ?? Resolve(d.Elements["/DP"]);
+        if (p is PdfArray a) p = a.Elements.Count > 0 ? Resolve(a.Elements[0]) : null;
+        return p as PdfDictionary;
     }
 
     // ───────────────────────── PDF object helpers ─────────────────────────
@@ -207,13 +462,6 @@ public static class PdfCompressor
             }
         }
         return 0;
-    }
-
-    private static bool HasPredictor(PdfDictionary d)
-    {
-        var p = Resolve(d.Elements["/DecodeParms"]) ?? Resolve(d.Elements["/DP"]);
-        if (p is PdfArray a) p = a.Elements.Count > 0 ? Resolve(a.Elements[0]) : null;
-        return p is PdfDictionary pd && pd.Elements.GetInteger("/Predictor") > 1;
     }
 
     // ───────────────────────── grayscale for page content ─────────────────────────

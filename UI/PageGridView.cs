@@ -53,6 +53,12 @@ public sealed class PageGridView : Control
     public event Action<PageItem>? QuickDelete;
     public event Action<int>? ZoomWheel;
     public event Action<Point>? ContextRequested;
+    /// <summary>The "Add PDF" placeholder tile at the end of the grid was clicked.</summary>
+    public event Action? AddPdfRequested;
+
+    private bool addHover, addPressed;
+    /// <summary>Number of grid slots: every page plus the trailing "Add PDF" placeholder.</summary>
+    private int Slots => Pages.Count == 0 ? 0 : Pages.Count + 1;
 
     public int TileWidth
     {
@@ -106,7 +112,7 @@ public sealed class PageGridView : Control
     {
         pad = Theme.S(18); gap = Theme.S(14); cellPad = Theme.S(8); capH = Theme.S(42);
         var targetBox = Theme.S(tileW);
-        var n = Pages.Count;
+        var n = Slots;
         var needBar = false;
         for (var pass = 0; pass < 3; pass++)
         {
@@ -314,6 +320,7 @@ public sealed class PageGridView : Control
         g.Clear(Theme.Canvas);
         var n = Pages.Count;
         if (n == 0) return;
+        var slots = Slots;
 
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.HighQualityBilinear;
@@ -322,7 +329,7 @@ public sealed class PageGridView : Control
         anyFading = false;
         var rowH = cellH + gap;
         var firstRow = Math.Max(0, (ScrollY - pad) / rowH);
-        var lastRow = Math.Min((n - 1) / cols, (ScrollY + Height - pad) / rowH);
+        var lastRow = Math.Min((slots - 1) / cols, (ScrollY + Height - pad) / rowH);
 
         // tell the thumbnail worker what is on screen (plus one row of look-ahead each way)
         var wanted = new HashSet<string>();
@@ -338,10 +345,10 @@ public sealed class PageGridView : Control
             for (var c = 0; c < cols; c++)
             {
                 var i = r * cols + c;
-                if (i >= n) break;
+                if (i >= slots) break;
                 var cell = CellRect(i);
                 if (!cell.IntersectsWith(ClientRectangle)) continue;
-                DrawCell(g, i, cell);
+                if (i == n) DrawAddTile(g, cell); else DrawCell(g, i, cell);
             }
 
         if (mode == Mode.Dragging && dropIdx >= 0) DrawInsertMarker(g, dropIdx);
@@ -381,6 +388,47 @@ public sealed class PageGridView : Control
         using var tb = new SolidBrush(Color.FromArgb((int)(255 * alpha), 245, 246, 250));
         var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
         g.DrawString(toastText, font, tb, new RectangleF(x + Theme.S(34), y, w - Theme.S(46), h), sf);
+    }
+
+    private Rectangle AddTileRect() => CellRect(Pages.Count);
+
+    private bool HitAddTile(Point p) => Pages.Count > 0 && AddTileRect().Contains(p);
+
+    /// <summary>Dashed "page placeholder" at the end of the list that opens the Add PDF dialog.</summary>
+    private void DrawAddTile(Graphics g, Rectangle cell)
+    {
+        var hot = addHover && mode == Mode.None;
+        var rf = new RectangleF(cell.X + 0.5f, cell.Y + 0.5f, cell.Width - 1, cell.Height - 1);
+        Gfx.FillRound(g, hot ? Theme.AccentSoft : Gfx.Mix(Theme.Canvas, Theme.Surface, 0.45f), rf, 10);
+        using (var path = Gfx.Round(rf, 10))
+        using (var pen = new Pen(hot ? Theme.Accent : Theme.Border, hot ? 2f : 1.5f) { DashStyle = DashStyle.Dash, DashPattern = new[] { 4f, 3f } })
+            g.DrawPath(pen, path);
+
+        // placeholder "page" with a plus badge, same footprint as a page thumbnail
+        var box = new Rectangle(cell.X + cellPad, cell.Y + cellPad, boxW, boxH);
+        var pw = (int)(Math.Min(boxW, boxH / 1.32) * 0.82); var ph = (int)(pw * 1.32);
+        var pr = new Rectangle(box.X + (box.Width - pw) / 2, box.Y + (box.Height - ph) / 2, pw, ph);
+        Gfx.FillRound(g, Color.FromArgb(hot ? 90 : 55, Theme.Surface), pr, 6);
+        using (var path = Gfx.Round(pr, 6))
+        using (var pen = new Pen(Gfx.Mix(Theme.Border, hot ? Theme.Accent : Theme.Muted, 0.5f), 1f) { DashStyle = DashStyle.Dot })
+            g.DrawPath(pen, path);
+
+        var d = Math.Clamp(Math.Min(pw, ph) / 3, Theme.S(34), Theme.S(60));
+        var badge = new Rectangle(pr.X + (pr.Width - d) / 2, pr.Y + (pr.Height - d) / 2, d, d);
+        using (var b = new SolidBrush(hot ? Theme.Accent : Gfx.Mix(Theme.Muted, Theme.Surface, 0.55f))) g.FillEllipse(b, badge);
+        using (var pen = new Pen(Color.White, Math.Max(2f, d / 12f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            var cx = badge.X + d / 2f; var cy = badge.Y + d / 2f; var arm = d * 0.24f;
+            g.DrawLine(pen, cx - arm, cy, cx + arm, cy); g.DrawLine(pen, cx, cy - arm, cx, cy + arm);
+        }
+
+        var capTop = box.Bottom + Theme.S(4);
+        TextRenderer.DrawText(g, "Add PDF", Theme.Ui(10f, FontStyle.Bold),
+            new Rectangle(cell.X + cellPad, capTop, boxW, Theme.S(18)), hot ? Theme.Accent : Theme.Text,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        TextRenderer.DrawText(g, "Click or drop files here", Theme.Ui(8f),
+            new Rectangle(cell.X + cellPad, capTop + Theme.S(18), boxW, Theme.S(16)), Theme.Muted,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
     }
 
     private void DrawCell(Graphics g, int i, Rectangle cell)
@@ -557,6 +605,8 @@ public sealed class PageGridView : Control
         Focus();
         var idx = HitIndex(e.Location);
 
+        if (e.Button == MouseButtons.Left && idx < 0 && HitAddTile(e.Location)) { addPressed = true; return; }
+
         if (e.Button == MouseButtons.Right)
         {
             if (idx >= 0 && !Selection.Contains(Pages[idx].Id)) SelectOnly(idx);
@@ -614,7 +664,8 @@ public sealed class PageGridView : Control
                 break;
             default:
                 var h = HitIndex(e.Location);
-                if (h != hoverIdx) { hoverIdx = h; Invalidate(); }
+                var ah = h < 0 && HitAddTile(e.Location);
+                if (h != hoverIdx || ah != addHover) { hoverIdx = h; addHover = ah; Cursor = ah ? Cursors.Hand : Cursors.Default; Invalidate(); }
                 break;
         }
     }
@@ -622,13 +673,19 @@ public sealed class PageGridView : Control
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (mode == Mode.None && hoverIdx != -1) { hoverIdx = -1; Invalidate(); }
+        if (mode == Mode.None && (hoverIdx != -1 || addHover)) { hoverIdx = -1; addHover = false; Cursor = Cursors.Default; Invalidate(); }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
+        if (addPressed)
+        {
+            addPressed = false;
+            if (HitAddTile(e.Location)) AddPdfRequested?.Invoke();
+            return;
+        }
         var was = mode;
         mode = Mode.None; Cursor = Cursors.Default; autoScroll.Stop();
         if (was == Mode.Dragging)

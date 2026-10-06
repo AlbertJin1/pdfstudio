@@ -540,7 +540,7 @@ public sealed partial class MainForm
         {
             var at = insertAt < 0 || insertAt > pages.Count ? pages.Count : insertAt;
             Edit(() => pages.InsertRange(at, added));
-            grid.SetSelection(added.Select(p => p.Id));
+            // Newly added pages are deliberately NOT auto-selected; the user's selection is kept.
             grid.EnsureVisible(pages.IndexOf(added[0]));
             Notify($"Added {added.Count} page(s).");
         }
@@ -585,7 +585,9 @@ public sealed partial class MainForm
         RefreshPageSizeButton();
         if (!ok) return;
         if (!selectedOnly) dirty = false;
-        Notify($"Saved {Path.GetFileName(path)} — {src.Count} page(s), {FormatSize(path)}.");
+        var cmp = pdf.LastCompression;
+        Notify($"Saved {Path.GetFileName(path)} — {src.Count} page(s), {FormatSize(path)}." + (cmp is { Summary.Length: > 0 } ? " " + cmp.Summary : ""), cmp is not { Reached: false });
+        if (cmp is { Reached: false }) MessageBox.Show(this, cmp.Summary, "PDF Studio — compression", MessageBoxButtons.OK, MessageBoxIcon.Information);
         Reveal(path);
     }
 

@@ -38,10 +38,14 @@ public sealed class PdfService
     /// Assembles the final PDF from the page list. Pages stay vector (no rasterising). Pipeline:
     /// build → optional built-in compression → optional password protection → move into place.
     /// </summary>
+    /// <summary>What the last <see cref="Export"/> call's compression achieved (null when compression was off).</summary>
+    public CompressionReport? LastCompression { get; private set; }
+
     public void Export(string outputPath, IReadOnlyList<PageItem> pages, ExportOptions? options = null, Action<int, int>? progress = null)
     {
         if (pages.Count == 0) throw new InvalidOperationException("There are no pages to export.");
         options ??= new ExportOptions();
+        LastCompression = null;
 
         var dir = Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
         Directory.CreateDirectory(dir);
@@ -49,7 +53,7 @@ public sealed class PdfService
         try
         {
             Build(temp, pages, options, progress);
-            if (options.Compression != PdfCompression.None || options.Grayscale) PdfCompressor.Compress(temp, options.Compression, options.Grayscale);
+            if (options.WantsCompression) LastCompression = PdfCompressor.Compress(temp, options);
             if (options.HasSecurity) ApplySecurity(temp, options);
             File.Move(temp, outputPath, true);
         }

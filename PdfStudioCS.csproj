@@ -15,15 +15,16 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Packer-style options (compressed bundle + extracting DLLs to %TEMP% at start-up) look like malware droppers to heuristic scanners, so they are off. -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <AssemblyTitle>PDF Studio</AssemblyTitle>
     <Product>PDF Studio</Product>
     <Description>PDF Studio — merge, reorder, edit, convert and export PDF pages.</Description>
     <Company>Jessie Albert Regualos</Company>
     <Authors>Jessie Albert Regualos</Authors>
-    <Version>2.6.0</Version>
-    <FileVersion>2.6.0.0</FileVersion>
+    <Version>2.6.3</Version>
+    <FileVersion>2.6.3.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
       <Copyright>© Jessie Albert Regualos</Copyright>
   </PropertyGroup>

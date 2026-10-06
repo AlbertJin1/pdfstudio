@@ -173,8 +173,8 @@ public abstract class ModernDialog : Form
 
     protected static T ValueOf<T>(ComboBox c) => ((Choice<T>)c.SelectedItem!).Value;
 
-    protected static NumericUpDown Num(decimal min, decimal max, decimal value, int decimals = 0) =>
-        new() { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), DecimalPlaces = decimals };
+    protected static NumericUpDown Num(decimal min, decimal max, decimal value, int decimals = 0, decimal increment = 1m) =>
+        new() { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), DecimalPlaces = decimals, Increment = increment };
 
     /// <summary>Text box + Browse… button on one row, for folder paths.</summary>
     protected static (Control Host, TextBox Box) FolderPicker(string initial, string description)

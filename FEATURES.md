@@ -18,7 +18,7 @@ This is the current feature set. What changed in each version, and when, is in `
 - Document title / author
 - Page numbers (6 positions, 4 formats, start number, skip cover)
 - Text watermark (opacity, size, angle)
-- Compression (built in, nothing to install): light / balanced / strong
+- Compression (built in, nothing to install): light / balanced / strong presets, reduce by a percentage, or reduce to a target size in MB
 - Password protection (open password, owner password, allow print / copy / edit)
 
 ## Conversion

@@ -1,10 +1,12 @@
 # PDF Studio — C# / .NET 8 (Windows)
 
-Merge, reorder, edit, split and convert PDFs. See `FEATURES.md` for the full list and `CHANGELOG.md` for the version history (current version: **2.6.0**).
+Merge, reorder, edit, split and convert PDFs. See `FEATURES.md` for the full list and `CHANGELOG.md` for the version history (current version: **2.6.1**).
 
 ## Build
 Install the .NET 8 SDK on the build machine, then run `build_publish.bat`.
 Output: `publish\PdfStudio.exe` (self-contained, single file, win-x64 — no runtime needed on target PCs).
+
+**Code signing:** the build signs `PdfStudio.exe` automatically when a certificate is configured (`signing\signing.config.bat`, see `signing\README.md`). Without one it warns and produces an unsigned exe; set `SIGN_REQUIRED=1` to make that an error.
 
 ## Nothing else to install
 Everything — merge, reorder, edit, PDF → Word, PDF ⇄ image, image → PDF — is built in and works offline.

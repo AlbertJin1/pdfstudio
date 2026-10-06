@@ -49,3 +49,9 @@ Desktop.ini
 # release-notes.md is rewritten for every release; remove this line if you want to keep it in git
 release-notes.md
 *.zip
+
+# ───────── Code signing secrets ─────────
+*.pfx
+*.p12
+signing/signing.config.bat
+signing/*.cer

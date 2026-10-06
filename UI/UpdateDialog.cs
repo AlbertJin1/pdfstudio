@@ -9,7 +9,7 @@ namespace PdfStudio.UI;
 public sealed class UpdateDialog : Form
 {
     private readonly UpdateInfo update;
-    private readonly TextBox notes = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, TabStop = false };
+    private readonly ReleaseNotesView notes = new() { Dock = DockStyle.Fill };
     private readonly ProgressBar bar = new() { Style = ProgressBarStyle.Continuous, Minimum = 0, Maximum = 1000, Dock = DockStyle.Fill, Visible = false };
     private readonly Txt status = new("", 8.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private readonly FlatButton skip, later, install;
@@ -33,7 +33,7 @@ public sealed class UpdateDialog : Form
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; KeyPreview = true;
         BackColor = Theme.Surface; Opacity = 0;
-        ClientSize = new Size(S(580), S(440));
+        ClientSize = new Size(S(640), S(580));
 
         // footer: status on the left, buttons on the right
         var footer = new Surface { Dock = DockStyle.Bottom, Height = S(72), Padding = new Padding(S(28), 0, S(28), 0), BorderTop = true };
@@ -59,26 +59,32 @@ public sealed class UpdateDialog : Form
         // body
         var body = new Surface { Dock = DockStyle.Fill, Padding = new Padding(S(28), S(22), S(28), S(8)) };
         body.UseRole(() => Theme.Surface);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Color.Transparent };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Color.Transparent };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(38)));    // heading
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(30)));    // version line
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(34)));    // "What's new"
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(76)));    // hero: icon, title, version chips
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(30)));    // "What's new" + number of changes
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));       // release notes
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
 
-        layout.Controls.Add(new Txt("A new version is available", 15f, FontStyle.Bold) { Dock = DockStyle.Fill }, 0, 0);
-        layout.Controls.Add(new Txt($"PDF Studio {update.Version} is ready. You have version {UpdateService.CurrentVersion}.", 9.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill }, 0, 1);
-        layout.Controls.Add(new Txt("What's new", 10f, FontStyle.Bold) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);
+        layout.Controls.Add(new UpdateHero("A new version is available", $"PDF Studio {update.Version} is ready to install.", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
 
-        notes.Font = Theme.Ui(9.5f);
-        notes.Text = string.IsNullOrWhiteSpace(update.Notes)
-            ? "No release notes were provided for this version."
-            : update.Notes.Replace("\r\n", "\n").Replace("\n", "\r\n").Trim();
-        notes.Margin = new Padding(0, S(6), 0, S(6));
-        layout.Controls.Add(notes, 0, 3);
+        var parsed = UpdateNotes.Parse(update.Notes);
+        var whatsNew = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
+        whatsNew.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        whatsNew.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        whatsNew.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        whatsNew.Controls.Add(new Txt("What's new", 10.5f, FontStyle.Bold) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 0);
+        if (parsed.Count > 0)
+            whatsNew.Controls.Add(new Txt(parsed.Count == 1 ? "1 change" : $"{parsed.Count} changes", 9f, FontStyle.Regular, true) { AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Right, Margin = new Padding(0, 0, 0, S(2)) }, 1, 0);
+        layout.Controls.Add(whatsNew, 0, 1);
+
+        notes.SetNotes(parsed);
+        var frame = new Surface { Dock = DockStyle.Fill, Padding = new Padding(1), Margin = new Padding(0, S(6), 0, S(6)) };
+        frame.UseRole(() => Theme.Border);
+        frame.Controls.Add(notes);
+        layout.Controls.Add(frame, 0, 2);
         bar.Margin = new Padding(0, S(8), 0, S(4));
-        layout.Controls.Add(bar, 0, 4);
+        layout.Controls.Add(bar, 0, 3);
         body.Controls.Add(layout);
 
         Controls.Add(body); Controls.Add(footer);

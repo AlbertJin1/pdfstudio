@@ -49,6 +49,7 @@ public sealed partial class EditorForm : Form
     private int dragHandle = -1;
     private bool dragUndoPushed;
     private RichTextBox? editBox;
+    private EditFrame? editFrame;                // the visible frame around the text box while editing
     private PageEditObject? editObj;
     private bool editIsNew;
     private (string OrigText, List<PageEditObject> Before)? pendingConv;
@@ -72,6 +73,12 @@ public sealed partial class EditorForm : Form
     private readonly Txt hint = new("", 9f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private readonly ToolTip tips = new() { InitialDelay = 350 };
     private Surface props = null!;
+    private PropsGrip propsGrip = null!;
+    private int propsGripStartX, propsGripStartW;
+    private bool applyingPropsWidth;
+    private const int PropsWidthMin = 270, PropsWidthDefault = 320, PropsWidthMax = 640;   // design pixels
+    private readonly List<FlowLayoutPanel> propsFlows = new();                          // button rows that fill the panel's width
+    private readonly List<(FlatButton Button, int PerRow)> propsButtons = new();        // buttons that share a row equally
     private FlowLayoutPanel propsFlow = null!;
     private TableLayoutPanel textGroup = null!, shapeGroup = null!, posGroup = null!, actionGroup = null!;
     private Txt propsTitle = null!;
@@ -113,10 +120,12 @@ public sealed partial class EditorForm : Form
         Shown += (_, _) =>
         {
             FlatButton.FitTree(this);
+            SetPropsWidth(props.Width); ApplyPropsWidth();
             FitZoom(); GoToPage(index, true);
             SetTool(Tool.EditText);
         };
         scroller.SizeChanged += (_, _) => { if (!inLayout) Relayout(); };
+        SizeChanged += (_, _) => { if (props != null) SetPropsWidth(props.Width); };   // keep room for the page when the window shrinks
         FormClosed += (_, _) => { renderTimer.Dispose(); pageBmp?.Dispose(); };
     }
 
@@ -166,7 +175,23 @@ public sealed partial class EditorForm : Form
         // ── bottom bar ──
         var bottom = new Surface { Dock = DockStyle.Bottom, Height = Theme.S(54), Padding = new Padding(10, 8, 10, 8), BorderTop = true };
         bottom.UseRole(() => Theme.Surface);
-        var left = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, BackColor = Color.Transparent };
+        // one-row tables: a control anchored only Left is centred vertically, so nothing can sit higher or lower than its neighbours
+        TableLayoutPanel CentredRow(DockStyle side, params Control[] items)
+        {
+            var t = new TableLayoutPanel
+            {
+                Dock = side, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Color.Transparent,
+                ColumnCount = items.Length, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty
+            };
+            t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            for (var i = 0; i < items.Length; i++)
+            {
+                t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                items[i].Dock = DockStyle.None; items[i].Anchor = AnchorStyles.Left;
+                t.Controls.Add(items[i], i, 0);
+            }
+            return t;
+        }
         FlatButton Small(string glyph, string text, Action a, string tip, bool isText = false)
         {
             var b = new FlatButton { Glyph = glyph, Text = text, GlyphIsText = isText, Kind = BtnKind.Ghost, Height = 34, Width = text.Length > 0 ? 60 : 38, Margin = new Padding(0, 0, 2, 0), AutoWidth = text.Length > 0, MinWidth = 38 };
@@ -177,15 +202,17 @@ public sealed partial class EditorForm : Form
         var zOut = Small("\u2212", "", () => SetZoom(zoom / 1.2f), "Zoom out (Ctrl + wheel)", true);
         var zIn = Small("+", "", () => SetZoom(zoom * 1.2f), "Zoom in (Ctrl + wheel)", true);
         var fit = Small("\uE740", "Fit", () => { FitZoom(); }, "Fit the page in the window");
-        left.Controls.AddRange(new Control[] { prevBtn, pageLabel, nextBtn, Sep(), zOut, zoomLabel, zIn, fit });
-        var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Color.Transparent };
+        pageLabel.Margin = Padding.Empty; zoomLabel.Margin = Padding.Empty;
+        var bottomSep = new Surface { Width = 1, Height = Theme.S(24), Margin = new Padding(8, 0, 8, 0) };
+        bottomSep.UseRole(() => Theme.Border);
+        var left = CentredRow(DockStyle.Left, prevBtn, pageLabel, nextBtn, bottomSep, zOut, zoomLabel, zIn, fit);
         var apply = new FlatButton { Text = "Save changes", Kind = BtnKind.Primary, Width = 150, Height = 36, Margin = new Padding(8, 0, 0, 0) };
         tips.SetToolTip(apply, "Keep all your edits on every page and close this window");
         apply.Click += (_, _) => { CommitInlineEdit(); DialogResult = DialogResult.OK; Close(); };
-        var cancel = new FlatButton { Text = "Cancel", Kind = BtnKind.Secondary, Width = 96, Height = 36 };
+        var cancel = new FlatButton { Text = "Cancel", Kind = BtnKind.Secondary, Width = 96, Height = 36, Margin = Padding.Empty };
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         tips.SetToolTip(cancel, "Close this window without keeping your edits");
-        right.Controls.AddRange(new Control[] { apply, cancel });
+        var right = CentredRow(DockStyle.Right, cancel, apply);
         bottom.Controls.Add(hint);
         bottom.Controls.Add(right);
         bottom.Controls.Add(left);
@@ -202,11 +229,15 @@ public sealed partial class EditorForm : Form
         canvas.MouseLeave += (_, _) => { if (hoverBlock != null) { hoverBlock = null; canvas.Invalidate(); } };
         canvas.MouseWheel += OnWheel; scroller.MouseWheel += OnWheel;
 
+        // Order matters: controls added last are docked first. Result: toolbar, bottom bar, side panel, drag grip, then the page area.
+        BuildPropsGrip();
         Controls.Add(scroller);
+        Controls.Add(propsGrip);
         Controls.Add(props);
         Controls.Add(bottom);
         Controls.Add(bar);
         Theme.Apply(propsFlow);
+        ApplyPropsWidth();
         textSwatch.BackColor = Color.Black; fillSwatch.BackColor = Color.White; strokeSwatch.BackColor = Color.Black;
     }
 
@@ -233,6 +264,15 @@ public sealed partial class EditorForm : Form
         return new Control[] { l, c };
     }
 
+    /// <summary>Adds a control across the whole width of a group (used for check boxes, so their text is never cut off).</summary>
+    private void Span(TableLayoutPanel t, Control c)
+    {
+        var r = t.RowCount++;
+        t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        c.Margin = new Padding(0, 3, 0, 3);
+        t.Controls.Add(c, 0, r); t.SetColumnSpan(c, 2);
+    }
+
     private FlowLayoutPanel ColourRow(Panel swatch, Action<Color> picked, Func<Color> current)
     {
         var f = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
@@ -256,9 +296,15 @@ public sealed partial class EditorForm : Form
 
     private void BuildProps()
     {
-        props = new Surface { Dock = DockStyle.Right, Width = Theme.S(284), Padding = new Padding(14, 10, 8, 8), BorderLeft = true };
+        var savedW = Math.Clamp(AppSettings.GetInt("editPanelWidth", PropsWidthDefault), PropsWidthMin, PropsWidthMax);
+        props = new Surface { Dock = DockStyle.Right, Width = Theme.S(savedW), Padding = new Padding(14, 10, 8, 8), BorderLeft = true };
         props.UseRole(() => Theme.Surface);
         propsFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = Color.Transparent };
+        // never show a sideways scroll bar: everything inside is sized to the panel's width instead
+        propsFlow.AutoScroll = false;
+        propsFlow.HorizontalScroll.Enabled = false; propsFlow.HorizontalScroll.Visible = false; propsFlow.HorizontalScroll.Maximum = 0;
+        propsFlow.AutoScroll = true;
+        propsFlow.SizeChanged += (_, _) => ApplyPropsWidth();
         propsTitle = new Txt("Properties", 12f, FontStyle.Bold) { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
         propsFlow.Controls.Add(propsTitle);
         BuildLayoutGroups();
@@ -316,10 +362,11 @@ public sealed partial class EditorForm : Form
         // actions
         actionGroup = Group("Object");
         var fp = new FlowLayoutPanel { AutoSize = true, Width = Theme.S(250), BackColor = Color.Transparent, Margin = new Padding(0) };
+        propsFlows.Add(fp);
         FlatButton A(string t, Action a, bool danger = false)
         {
             var b = new FlatButton { Text = t, Kind = BtnKind.Secondary, Width = Theme.S(118), Height = 30, Margin = new Padding(0, 0, 6, 6), DangerStyle = danger };
-            b.Click += (_, _) => a(); return b;
+            b.Click += (_, _) => a(); propsButtons.Add((b, 2)); return b;
         }
         fp.Controls.AddRange(new Control[] { A("Duplicate", DuplicateSel), A("Delete", DeleteSel, true), A("Bring to front", () => Reorder(true)), A("Send to back", () => Reorder(false)) });
         var rowA = actionGroup.RowCount++; actionGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -328,6 +375,7 @@ public sealed partial class EditorForm : Form
         propsFlow.Controls.Add(marginGroup);
 
         var clear = new FlatButton { Text = "Clear all edits on this page", Kind = BtnKind.Secondary, Width = Theme.S(250), Height = 30, Margin = new Padding(0, 4, 0, 0) };
+        propsButtons.Add((clear, 1));
         clear.Click += (_, _) =>
         {
             if (Objs.Count == 0) return;
@@ -631,6 +679,7 @@ public sealed partial class EditorForm : Form
         catch (Exception ex) { textReadError = ex.Message; }
         blockCache[page.Id] = list ?? new List<PdfTextBlock>();
         if (IsDisposed) return;
+        AutoMargins(page);
         UpdateHint(); canvas.Invalidate();
     }
 
@@ -695,7 +744,8 @@ public sealed partial class EditorForm : Form
             g.FillRectangle(fill, r); g.DrawRectangle(pen, r.X, r.Y, r.Width, r.Height);
         }
 
-        if (sel != null) DrawSelection(g, sel);
+        // while a text box is open its own frame (EditFrame) is the selection, so nothing is drawn underneath it
+        if (sel != null && !(editBox != null && ReferenceEquals(sel, editObj))) DrawSelection(g, sel);
         DrawLayoutOverlays(g);
     }
 
@@ -890,6 +940,7 @@ public sealed partial class EditorForm : Form
 
     private void OnMove(object? sender, MouseEventArgs e)
     {
+        if (gripMoving) { GripMove(); return; }          // text box being dragged by its Move handle or frame
         if (pendingBlock != null)
         {
             // a text line is held down: a small movement turns it into a movable text box (no typing), a plain click edits it
@@ -1003,6 +1054,7 @@ public sealed partial class EditorForm : Form
     private void OnUp(object? sender, MouseEventArgs e)
     {
         canvas.Capture = false;
+        if (gripMoving) { GripUp(); return; }
         if (pendingBlock != null) { var pb = pendingBlock; pendingBlock = null; ConvertBlock(pb); return; }
         ClearGuides();
         if (drag == DragMode.Margin)
@@ -1162,6 +1214,13 @@ public sealed partial class EditorForm : Form
             Text = (o.Text ?? "").Replace("\n", "\r\n")
         };
         editBox = box; editOrigText = o.Text ?? "";
+        var frame = new EditFrame();
+        frame.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) GripDown(); };
+        frame.MouseMove += (_, _) => GripMove();
+        frame.MouseUp += (_, _) => GripUp();
+        tips.SetToolTip(frame, "Press and drag the frame to move this text box (hold Alt to move freely)");
+        editFrame = frame;
+        canvas.Controls.Add(frame);
         canvas.Controls.Add(box);
         ZeroMargins(box);
         LoadRichTextStyles(box, o);
@@ -1192,6 +1251,17 @@ public sealed partial class EditorForm : Form
         if (isNew || fromConversion) box.SelectAll(); else box.Select(box.TextLength, 0);
         SyncProps();
         canvas.Invalidate();
+    }
+
+    /// <summary>
+    /// Size of a font read back from the RichTextBox, in pixels. The control reports fonts in points even though
+    /// they were assigned in pixels, so reading <c>Font.Size</c> directly shrank text by 72/96 on every style change.
+    /// </summary>
+    private float RichPx(Font f)
+    {
+        if (f.Unit == GraphicsUnit.Pixel) return f.Size;
+        var dpi = editBox?.DeviceDpi ?? DeviceDpi;
+        return f.SizeInPoints * dpi / 72f;
     }
 
     private static Font RichFont(string name, double sizePx, bool bold, bool italic, bool underline)
@@ -1263,7 +1333,7 @@ public sealed partial class EditorForm : Form
             var f = box.SelectionFont;
             var c = box.SelectionColor;
             var fontName = f?.Name ?? o.FontName;
-            var size = f?.Size is > 0 ? f!.Size / Math.Max(0.01f, zoom) : o.FontSize;
+            var size = f?.Size is > 0 ? RichPx(f!) / Math.Max(0.01f, zoom) : o.FontSize;
             var bold = f?.Bold ?? o.Bold; var italic = f?.Italic ?? o.Italic; var underline = f?.Underline ?? o.Underline;
             var hex = PageEditObject.Hex(c);
             var run = new TextStyleRun { Start = modelIndex, Length = 1, FontName = fontName, FontSize = Math.Round(size, 2), Bold = bold, Italic = italic, Underline = underline, ColorHex = hex };
@@ -1316,7 +1386,7 @@ public sealed partial class EditorForm : Form
         {
             var current = box.SelectionFont;
             var name = fontName ?? current?.Name ?? o.FontName;
-            var size = sizePt ?? (current?.Size > 0 ? current.Size / Math.Max(0.01f, zoom) : o.FontSize);
+            var size = sizePt ?? (current?.Size > 0 ? RichPx(current) / Math.Max(0.01f, zoom) : o.FontSize);
             var b = bold ?? current?.Bold ?? o.Bold; var it = italic ?? current?.Italic ?? o.Italic; var u = underline ?? current?.Underline ?? o.Underline;
             var col = color ?? box.SelectionColor;
             using var f0 = RichFont(name, size * zoom, b, it, u);
@@ -1332,7 +1402,7 @@ public sealed partial class EditorForm : Form
                 box.Select(i, 1);
                 var current = box.SelectionFont;
                 var name = fontName ?? current?.Name ?? o.FontName;
-                var size = sizePt ?? (current?.Size > 0 ? current.Size / Math.Max(0.01f, zoom) : o.FontSize);
+                var size = sizePt ?? (current?.Size > 0 ? RichPx(current) / Math.Max(0.01f, zoom) : o.FontSize);
                 var b = bold ?? current?.Bold ?? o.Bold; var it = italic ?? current?.Italic ?? o.Italic; var u = underline ?? current?.Underline ?? o.Underline;
                 var col = color ?? box.SelectionColor;
                 using var f = RichFont(name, size * zoom, b, it, u);
@@ -1364,7 +1434,16 @@ public sealed partial class EditorForm : Form
         if (editBox == null || editObj == null) return;
         var m = EditPainter.MeasureText(editObj);
         editBox.Size = new Size(Math.Max(Theme.S(70), (int)(m.Width * zoom) + 28), Math.Max(Theme.S(22), (int)(m.Height * zoom) + Theme.S(4)));
+        PositionEditFrame();
         PositionEditBar();
+    }
+
+    /// <summary>Keeps the visible frame exactly around the text box (the frame is a ring, so the box shows through its middle).</summary>
+    private void PositionEditFrame()
+    {
+        if (editFrame == null || editBox == null) return;
+        var b = EditFrame.Band;
+        editFrame.Bounds = new Rectangle(editBox.Left - b, editBox.Top - b, editBox.Width + 2 * b, editBox.Height + 2 * b);
     }
 
     private void CommitInlineEdit()
@@ -1374,6 +1453,7 @@ public sealed partial class EditorForm : Form
         var box = editBox; var o = editObj; var isNew = editIsNew;
         editBox = null; editObj = null;
         canvas.Controls.Remove(box); box.Dispose();
+        if (editFrame != null) { var fr = editFrame; editFrame = null; canvas.Controls.Remove(fr); fr.Dispose(); }
         HideEditBar();
 
         if (string.IsNullOrWhiteSpace(o.Text))
@@ -1485,7 +1565,7 @@ public sealed partial class EditorForm : Form
                     {
                         editBox.Select(savedStart, 1);
                         var f = editBox.SelectionFont;
-                        if (f != null) { fontName = f.Name; fontSize = f.Size / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
+                        if (f != null) { fontName = f.Name; fontSize = RichPx(f) / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
                         color = editBox.SelectionColor;
                         editBox.Select(savedStart, Math.Min(savedLen, editBox.TextLength - savedStart));
                     }
@@ -1493,7 +1573,7 @@ public sealed partial class EditorForm : Form
                     {
                         editBox.Select(savedStart, 1);
                         var f = editBox.SelectionFont;
-                        if (f != null) { fontName = f.Name; fontSize = f.Size / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
+                        if (f != null) { fontName = f.Name; fontSize = RichPx(f) / Math.Max(0.01f, zoom); bold = f.Bold; italic = f.Italic; underline = f.Underline; }
                         color = editBox.SelectionColor;
                         editBox.Select(savedStart, 0);
                     }

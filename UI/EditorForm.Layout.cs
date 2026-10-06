@@ -56,6 +56,7 @@ public sealed partial class EditorForm
         marginBtn.Active = true;
         marginBtn.DropMenu = Menus.Make(
             ("Show / hide margin guides", ToggleMargins),
+            ("Fit margins to this page's text", FitMarginsToContent),
             ("Reset margins on this page (0.5 in)", ResetMargins),
             ("Use this page's margins on every page", MarginsToAll));
     }
@@ -70,15 +71,17 @@ public sealed partial class EditorForm
         FlatButton AB(string text, int mode, string tip)
         {
             var b = new FlatButton { Text = text, Kind = BtnKind.Secondary, Width = Theme.S(76), Height = 30, Margin = new Padding(0, 0, 4, 6) };
-            b.Click += (_, _) => AlignSel(mode); tips.SetToolTip(b, tip); return b;
+            b.Click += (_, _) => AlignSel(mode); tips.SetToolTip(b, tip); propsButtons.Add((b, 3)); return b;
         }
         var fp = new FlowLayoutPanel { AutoSize = true, Width = Theme.S(250), BackColor = Color.Transparent, Margin = new Padding(0) };
+        propsFlows.Add(fp);
         fp.Controls.AddRange(new Control[]
         {
             AB("Left", 0, "Line up with the left margin"), AB("Centre", 1, "Centre between the left and right margins"), AB("Right", 2, "Line up with the right margin"),
             AB("Top", 3, "Line up with the top margin"), AB("Middle", 4, "Centre between the top and bottom margins"), AB("Bottom", 5, "Line up with the bottom margin")
         });
         var best = new FlatButton { Text = "Snap to best spot", Kind = BtnKind.Primary, Width = Theme.S(246), Height = 32, Margin = new Padding(0, 0, 0, 4) };
+        propsButtons.Add((best, 1));
         best.Click += (_, _) => SmartSnapSel();
         tips.SetToolTip(best, "Moves the selected object to the nearest good position: a margin, the page centre, or in line with other objects and text");
         fp.Controls.Add(best);
@@ -88,20 +91,25 @@ public sealed partial class EditorForm
 
         // ── page margins + snapping (always visible) ──
         marginGroup = Group("Page margins");
-        Row(marginGroup, "", marginCheck);
-        Row(marginGroup, "", snapCheck);
+        Span(marginGroup, marginCheck);
+        Span(marginGroup, snapCheck);
         unitBox.Items.AddRange(new object[] { "inches", "centimetres", "points" });
         unitBox.SelectedIndex = 0;
         Row(marginGroup, "Units", unitBox);
         Row(marginGroup, "Top", mTop); Row(marginGroup, "Bottom", mBottom); Row(marginGroup, "Left", mLeft); Row(marginGroup, "Right", mRight);
+        var mfFit = new FlowLayoutPanel { AutoSize = true, Width = Theme.S(250), BackColor = Color.Transparent, Margin = new Padding(0) };
         var mf = new FlowLayoutPanel { AutoSize = true, Width = Theme.S(250), BackColor = Color.Transparent, Margin = new Padding(0) };
-        FlatButton MB(string t, Action a, string tip, int w)
+        propsFlows.Add(mfFit); propsFlows.Add(mf);
+        FlatButton MB(string t, Action a, string tip, int perRow)
         {
-            var b = new FlatButton { Text = t, Kind = BtnKind.Secondary, Width = Theme.S(w), Height = 30, Margin = new Padding(0, 4, 6, 6) };
-            b.Click += (_, _) => a(); tips.SetToolTip(b, tip); return b;
+            var b = new FlatButton { Text = t, Kind = BtnKind.Secondary, Width = Theme.S(100), Height = 30, Margin = new Padding(0, 4, 6, 2) };
+            b.Click += (_, _) => a(); tips.SetToolTip(b, tip); propsButtons.Add((b, perRow)); return b;
         }
-        mf.Controls.Add(MB("Reset", ResetMargins, "Back to 0.5 inch on every side", 80));
-        mf.Controls.Add(MB("Use on all pages", MarginsToAll, "Copy these margins to every page of the document", 150));
+        mfFit.Controls.Add(MB("Fit to page text", FitMarginsToContent, "Put the margin guides where the text on this page really starts and ends", 1));
+        mf.Controls.Add(MB("Reset", ResetMargins, "Back to 0.5 inch on every side", 2));
+        mf.Controls.Add(MB("Use on all pages", MarginsToAll, "Copy these margins to every page of the document", 2));
+        var rf = marginGroup.RowCount++; marginGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        marginGroup.Controls.Add(mfFit, 0, rf); marginGroup.SetColumnSpan(mfFit, 2);
         var rm = marginGroup.RowCount++; marginGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         marginGroup.Controls.Add(mf, 0, rm); marginGroup.SetColumnSpan(mf, 2);
 
@@ -129,6 +137,7 @@ public sealed partial class EditorForm
             case 2: m.Right = ClampMargin(pt, pw); break;
             default: m.Bottom = ClampMargin(pt, ph); break;
         }
+        m.Custom = true;
         dirty = true;
     }
 
@@ -175,15 +184,56 @@ public sealed partial class EditorForm
 
     private void ResetMargins()
     {
-        margins[pages[index].Id] = new PageMargins();
+        margins[pages[index].Id] = new PageMargins { Custom = true };
         dirty = true; SyncMargins(); canvas.Invalidate();
+    }
+
+    /// <summary>
+    /// The page's real content box: the left-most, top-most, right-most and bottom-most text on the page.
+    /// Returns null when the page has no text (a scan or a picture), so the default margins stay.
+    /// </summary>
+    private static PageMargins? DetectMargins(List<PdfTextBlock> blocks, (double W, double H) size)
+    {
+        double l = double.MaxValue, t = double.MaxValue, r = double.MinValue, b = double.MinValue;
+        foreach (var bl in blocks)
+        {
+            var x = bl.Box;
+            if (x.Width <= 0 || x.Height <= 0 || string.IsNullOrWhiteSpace(bl.Text)) continue;
+            l = Math.Min(l, x.Left); t = Math.Min(t, x.Top); r = Math.Max(r, x.Right); b = Math.Max(b, x.Bottom);
+        }
+        if (l == double.MaxValue) return null;
+        double Fit(double v, double dim) => ClampMargin(Math.Round(Math.Max(0, v) * 2) / 2, dim);   // nearest half point
+        return new PageMargins { Left = Fit(l, size.W), Top = Fit(t, size.H), Right = Fit(size.W - r, size.W), Bottom = Fit(size.H - b, size.H) };
+    }
+
+    /// <summary>Margins the user has not touched follow the page's own text, so the guides sit where the page content really is.</summary>
+    private void AutoMargins(PageItem page)
+    {
+        if (!margins.TryGetValue(page.Id, out var m) || m.Custom) return;
+        if (!blockCache.TryGetValue(page.Id, out var blocks)) return;
+        var d = DetectMargins(blocks, page.DisplaySizePt(false));
+        if (d == null) return;
+        m.Left = d.Left; m.Top = d.Top; m.Right = d.Right; m.Bottom = d.Bottom;
+        if (pages[index].Id == page.Id) SyncMargins();
+    }
+
+    private void FitMarginsToContent()
+    {
+        var page = pages[index];
+        if (!blockCache.TryGetValue(page.Id, out var blocks)) { hint.Text = "The text of this page is still loading. Try again in a moment."; return; }
+        var d = DetectMargins(blocks, PageSize);
+        if (d == null) { hint.Text = "This page has no text to measure (it may be a scan or a picture), so the margins were left as they are."; return; }
+        var m = CurMargins;
+        m.Left = d.Left; m.Top = d.Top; m.Right = d.Right; m.Bottom = d.Bottom; m.Custom = true;
+        dirty = true; SyncMargins(); canvas.Invalidate();
+        hint.Text = "The margin guides now sit where the text on this page starts and ends.";
     }
 
     private void MarginsToAll()
     {
         if (pages.Count > 1 && MessageBox.Show(this, "Use this page's margins on every page?", "Edit PDF", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         var m = CurMargins;
-        foreach (var p in pages) margins[p.Id] = m.Clone();
+        foreach (var p in pages) { var c = m.Clone(); c.Custom = true; margins[p.Id] = c; }
         dirty = true; canvas.Invalidate();
         hint.Text = "These margins are now used on every page.";
     }
@@ -652,12 +702,15 @@ public sealed partial class EditorForm
             AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BorderStyle = BorderStyle.FixedSingle,
             BackColor = Theme.Surface, Padding = new Padding(4, 3, 4, 3), Margin = Padding.Empty
         };
+        // paint the bar off-screen first, so moving it never leaves stray copies behind
+        typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.SetValue(bar, true);
         var grip = new MoveGrip();
         grip.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) GripDown(); };
         grip.MouseMove += (_, _) => GripMove();
         grip.MouseUp += (_, _) => GripUp();
         tips.SetToolTip(grip, "Press and drag to move this text box (hold Alt to move freely)");
-        var label = new Txt("Editing text", 9f, FontStyle.Bold) { AutoSize = true, Margin = new Padding(2, 8, 12, 0) };
+        var label = new Txt("Editing text", 9f, FontStyle.Bold) { Height = 30, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(2, 0, 12, 0) };
+        label.Width = TextRenderer.MeasureText("Editing text", label.Font, new Size(1000, 100), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + Theme.S(6);
         var ok = new FlatButton { Text = "Apply", Glyph = "\uE73E", Kind = BtnKind.Primary, Height = 30, AutoWidth = true, MinWidth = 90, Margin = new Padding(0, 0, 4, 0) };
         var no = new FlatButton { Text = "Cancel", Kind = BtnKind.Secondary, Height = 30, AutoWidth = true, MinWidth = 76, Margin = Padding.Empty };
         ok.Click += (_, _) => BeginInvoke(new Action(CommitInlineEdit));
@@ -681,10 +734,11 @@ public sealed partial class EditorForm
     private void PositionEditBar()
     {
         if (editBar == null || editBox == null) return;
+        var anchor = editFrame?.Bounds ?? editBox.Bounds;      // sit above the frame, not on top of it
         var sz = editBar.GetPreferredSize(Size.Empty);
-        var x = Math.Clamp(editBox.Left, 2, Math.Max(2, canvas.Width - sz.Width - 2));
-        var y = editBox.Top - sz.Height - 6;
-        if (y < 2) y = editBox.Bottom + 6;
+        var x = Math.Clamp(anchor.Left, 2, Math.Max(2, canvas.Width - sz.Width - 2));
+        var y = anchor.Top - sz.Height - 4;
+        if (y < 2) y = anchor.Bottom + 4;
         editBar.Location = new Point(x, y);
         editBar.BringToFront();
     }
@@ -710,6 +764,134 @@ public sealed partial class EditorForm
             if (editGripUndo && undo.Count > 0) { undo.RemoveAt(undo.Count - 1); UpdateUndoButtons(); }
         }
         CommitInlineEdit();
+    }
+
+    // ═════════════════════════ visible frame around the text being edited ═════════════════════════
+
+    /// <summary>
+    /// The outline of the text box while it is being edited: a solid line, a soft band and four corner blocks.
+    /// It is a ring (the middle is cut out), so the text box shows through and nothing is hidden behind it.
+    /// Dragging the ring moves the text box, like the Move handle.
+    /// </summary>
+    private sealed class EditFrame : Control
+    {
+        public static int Band => Math.Max(7, Theme.S(7));
+
+        public EditFrame()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, false);
+            TabStop = false; Cursor = Cursors.SizeAll;
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            var b = Band;
+            if (Width <= b * 2 || Height <= b * 2) return;
+            var ring = new Region(new Rectangle(0, 0, Width, Height));
+            ring.Exclude(new Rectangle(b, b, Width - 2 * b, Height - 2 * b));
+            var old = Region; Region = ring; old?.Dispose();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics; var b = Band;
+            g.SmoothingMode = SmoothingMode.None;
+            g.Clear(Gfx.Mix(Theme.AccentSoft, Theme.Accent, 0.30f));
+            using (var pen = new Pen(Theme.Accent, 2f)) g.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
+            using var solid = new SolidBrush(Theme.Accent);
+            g.FillRectangle(solid, 0, 0, b, b); g.FillRectangle(solid, Width - b, 0, b, b);
+            g.FillRectangle(solid, 0, Height - b, b, b); g.FillRectangle(solid, Width - b, Height - b, b, b);
+        }
+    }
+
+    // ═════════════════════════ adjustable width of the side panel ═════════════════════════
+
+    /// <summary>The thin bar between the page and the side panel: drag it to change the panel's width, double-click to reset.</summary>
+    private sealed class PropsGrip : Control
+    {
+        private bool hot;
+        public bool Dragging { get; set; }
+
+        public PropsGrip()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, false);
+            TabStop = false; Cursor = Cursors.SizeWE; Dock = DockStyle.Right; Width = Math.Max(8, Theme.S(8));
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hot = true; base.OnMouseEnter(e); Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { hot = false; base.OnMouseLeave(e); Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics; var on = hot || Dragging;
+            g.Clear(on ? Theme.AccentSoft : Theme.Canvas);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var dot = new SolidBrush(on ? Theme.Accent : Theme.Muted);
+            float cx = Width / 2f, cy = Height / 2f;
+            for (var i = -2; i <= 2; i++) g.FillEllipse(dot, cx - 1.5f, cy + i * 8 - 1.5f, 3f, 3f);
+        }
+    }
+
+    private void BuildPropsGrip()
+    {
+        propsGrip = new PropsGrip();
+        tips.SetToolTip(propsGrip, "Drag to make the side panel wider or narrower. Double-click to put it back.");
+        propsGrip.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            propsGripStartX = Cursor.Position.X; propsGripStartW = props.Width;
+            propsGrip.Dragging = true; propsGrip.Invalidate();
+        };
+        propsGrip.MouseMove += (_, _) =>
+        {
+            if (!propsGrip.Dragging) return;
+            SetPropsWidth(propsGripStartW - (Cursor.Position.X - propsGripStartX));   // the panel is on the right, so dragging left widens it
+        };
+        propsGrip.MouseUp += (_, _) =>
+        {
+            if (!propsGrip.Dragging) return;
+            propsGrip.Dragging = false; propsGrip.Invalidate(); SavePropsWidth();
+        };
+        propsGrip.DoubleClick += (_, _) => { SetPropsWidth(Theme.S(PropsWidthDefault)); SavePropsWidth(); };
+    }
+
+    private void SetPropsWidth(int w)
+    {
+        var min = Theme.S(PropsWidthMin);
+        var max = Math.Max(min, Math.Min(Theme.S(PropsWidthMax), (int)(ClientSize.Width * 0.6)));   // always leave room for the page
+        w = Math.Clamp(w, min, max);
+        if (w == props.Width) return;
+        props.Width = w;
+    }
+
+    private void SavePropsWidth()
+    {
+        var logical = (int)Math.Round(props.Width * 100.0 / Math.Max(1, Theme.S(100)));
+        AppSettings.SetInt("editPanelWidth", Math.Clamp(logical, PropsWidthMin, PropsWidthMax));
+    }
+
+    /// <summary>Stretches every block of the side panel to its current width, so nothing is cut off and no sideways scroll bar appears.</summary>
+    private void ApplyPropsWidth()
+    {
+        if (propsFlow == null || applyingPropsWidth) return;
+        var w = propsFlow.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2;   // room for the vertical scroll bar is always kept
+        if (w < Theme.S(180)) return;
+        applyingPropsWidth = true;
+        try
+        {
+            propsFlow.SuspendLayout();
+            foreach (Control c in propsFlow.Controls)
+                if (c is TableLayoutPanel t) { t.MinimumSize = new Size(w, 0); t.MaximumSize = new Size(w, 0); t.Width = w; }
+            foreach (var f in propsFlows) { f.MinimumSize = new Size(w, 0); f.MaximumSize = new Size(w, 0); f.Width = w; }
+            foreach (var (b, perRow) in propsButtons)
+                b.Width = Math.Max(Theme.S(60), (w - perRow * b.Margin.Horizontal) / perRow - 1);
+            tipLabel.MaximumSize = new Size(w, 0);
+            propsFlow.ResumeLayout(true);
+        }
+        finally { applyingPropsWidth = false; }
     }
 
     // ═════════════════════════ Move handle on the edit bar ═════════════════════════
@@ -744,6 +926,11 @@ public sealed partial class EditorForm
         if (editObj == null) return;
         sel = editObj; dragOrig = editObj.Clone(); dragBounds = EditPainter.Bounds(editObj);
         gripAnchor = Cursor.Position; gripMoving = true; gripUndoPushed = false;
+        // The Apply/Cancel bar is hidden while the box is dragged (it comes back on release) and the canvas takes over the
+        // mouse: moving a control that is itself being pressed is what smeared copies of the bar across the page.
+        if (editBar != null) editBar.Visible = false;
+        canvas.Capture = true;
+        canvas.Invalidate(true);
     }
 
     private void GripMove()
@@ -761,14 +948,17 @@ public sealed partial class EditorForm
         }
         var (sdx, sdy) = SnapMoveDelta(editObj, dx, dy);
         editObj.X = dragOrig.X + sdx; editObj.Y = dragOrig.Y + sdy;
-        PositionEditBox(); ShowSnapHint(); SyncPosOnly(); canvas.Invalidate();
+        PositionEditBox(); ShowSnapHint(); SyncPosOnly();
+        canvas.Invalidate(true); canvas.Update();       // repaint the page and the moved children right now, no leftovers
     }
 
     private void GripUp()
     {
         if (!gripMoving) return;
         gripMoving = false; ClearGuides(); dragOrig = null;
+        canvas.Capture = false;
+        if (editBar != null) { PositionEditBar(); editBar.Visible = true; editBar.BringToFront(); }
         if (editBox != null) { hint.Text = TypingHint; editBox.Focus(); }
-        canvas.Invalidate();
+        canvas.Invalidate(true); canvas.Update();
     }
 }

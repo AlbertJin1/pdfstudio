@@ -21,6 +21,61 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.6.3", new DateOnly(2026, 10, 6), "Edit PDF: resizable side panel, a clearly visible text box and margin guides that match the page.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "Edit PDF: drag the thin bar between the page and the side panel to make the panel wider or narrower (double-click the bar to put it back). The width is remembered.",
+                "Edit PDF > Page margins: a Fit to page text button (also in the Margins menu) that puts the guides exactly where the text on the page starts and ends."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Edit PDF: the margin guides of a page you have not adjusted yourself now follow the page's real text instead of a fixed 0.5 inch, so they line up with the page. Dragging a guide, typing a margin, Reset or Use on all pages makes them yours and they are left alone.",
+                "Edit PDF: everything in the side panel stretches to the panel's width, so check boxes and buttons are never cut off and there is no sideways scroll bar.",
+                "Help & user guide: topics now open through a new reader that is drawn in one pass, so the heading and first lines can no longer appear blank or half-painted.",
+                "Help & user guide: a shimmering loading placeholder and a short fade-in play while a topic opens. Searching tints the matching paragraphs and jumps to the first one; Ctrl+C copies the topic.",
+                "Update window: the release notes are shown as coloured Added / Changed / Fixed sections with a version header."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Edit PDF: the text box being edited now has a clear frame (solid outline, soft band and four corner blocks). Before, the corner handles were half hidden behind the text box, which looked broken, and the box was hard to see on the page.",
+                "Edit PDF: the frame can be dragged to move the text box, and the Apply / Cancel bar sits above the frame instead of on top of it."
+            })
+        }),
+        new("2.6.2", new DateOnly(2026, 10, 6), "PDF compression that hits a percentage or an exact size.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "Export PDF > Compress: choose how to compress. Preset level (as before), Reduce by a percentage (for example 50% makes the file half its normal size) or Reduce to a target size (MB). PDF Studio tries the gentlest picture settings that reach the goal, measures the real file size and goes a little harsher if it is still over. After saving you see the before and after size, and a message if the goal cannot be reached.",
+                "Compression now also handles pictures stored with PNG or TIFF predictors (common in PDFs made by Word, browsers and scanners' software), which were skipped before."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "The Export window's Compress & protect tab is split into two tabs, Compress and Protect, so both fit comfortably.",
+                "Pictures are re-encoded on several processor cores at once, so large scanned files compress much faster."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Compression no longer converts pictures that could not be made smaller; a picture is only replaced when the new version is smaller (except when converting to grayscale)."
+            })
+        }),
+        new("2.6.1", new DateOnly(2026, 10, 6), "Add PDF tile, a modern Export window and text-size fixes.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "An Add PDF placeholder tile at the end of the page thumbnails. Click it (or drop files on the grid) to add more PDFs."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "The Export PDF window is redesigned: a cleaner tab bar, a heading and short description on every tab, consistent label and field alignment, fixed-width number fields, and the page-number and watermark fields are greyed out until the option is switched on."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Edit PDF: applying bold, italic, underline, colour or a font to selected text no longer shrinks the text. The size was being read back from the editor in points instead of pixels, so every style change cut it to 75%.",
+                "Export PDF: the labels on the Details, Watermark and other tabs were pushed to the bottom of the window and no longer lined up with their fields.",
+                "Adding a PDF no longer selects all of its pages automatically; your current selection is left alone."
+            })
+        }),
         new("2.6.0", new DateOnly(2026, 10, 5), "Reviews, usage statistics and a calmer empty window.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]
