@@ -184,12 +184,10 @@ public sealed class ImageToPdfDialog : ModernDialog
     private readonly NumericUpDown margin = Num(0, 100, 10, 1);
     private readonly NumericUpDown customW = Num(10, 2000, 210, 1);
     private readonly NumericUpDown customH = Num(10, 2000, 297, 1);
-    private readonly ComboBox output = MakeCombo(("Add pages to the workspace", true), ("Save as a PDF file", false));
     private Bitmap? previewBmp;
     private string? previewPath;
 
     public IReadOnlyList<string> Images => list.Items.Cast<Entry>().Select(e => e.Path).ToList();
-    public bool AddToWorkspace => ValueOf<bool>(output);
     public ImagePdfOptions Options => new()
     {
         PageSize = ValueOf<ImagePdfPageSize>(pageSize), Orientation = ValueOf<ImagePdfOrientation>(orientation), Fit = ValueOf<ImagePdfFit>(fit),
@@ -220,7 +218,7 @@ public sealed class ImageToPdfDialog : ModernDialog
             c.Dock = DockStyle.Fill; c.Margin = new Padding(0, 3, 0, 3); opts.Controls.Add(c, 1, r);
         }
         Row("Page size", pageSize); Row("Custom W (mm)", customW); Row("Custom H (mm)", customH); Row("Orientation", orientation);
-        Row("Image fit", fit); Row("Margin (mm)", margin); Row("Result", output);
+        Row("Image fit", fit); Row("Margin (mm)", margin);
 
         var right = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
         right.Controls.Add(opts); canvas.Margin = new Padding(0); right.Controls.Add(canvas);

@@ -39,12 +39,43 @@ public readonly record struct PageImageLayout(double PageW, double PageH, double
 
 public readonly record struct ImageInfo(int Width, int Height, double XDpi, double YDpi, int Frames);
 
+/// <summary>Where a one-image page file in the session folder came from, so it can be drawn without PDFium.</summary>
+public sealed record ImagePageSource(string ImagePath, ImagePdfOptions Options);
+
 /// <summary>PDF rendering (PDFium) and image → PDF layout/embedding.</summary>
 public sealed class ImagePdfService
 {
     public static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp" };
     public static bool IsImage(string path) => ImageExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
     public const string ImageFilter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp|All files|*.*";
+
+    /// <summary>
+    /// Pictures added to the workspace become one-image page files in the session folder. Thumbnails and previews of
+    /// those pages are drawn straight from the picture (GDI+), so they never depend on PDFium and never wait on it.
+    /// </summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImagePageSource> ImagePageSources = new(StringComparer.OrdinalIgnoreCase);
+
+    private static Bitmap RenderImagePage(ImagePageSource src, int frame, double pxPerPt)
+    {
+        using var loaded = LoadImage(src.ImagePath, frame);
+        var L = ComputeLayout(loaded.Bitmap.Width, loaded.Bitmap.Height, loaded.Bitmap.HorizontalResolution, loaded.Bitmap.VerticalResolution, src.Options);
+        var k = Math.Min(Math.Max(0.05, pxPerPt), 8000.0 / Math.Max(L.PageW, L.PageH));
+        var w = Math.Max(1, (int)Math.Round(L.PageW * k));
+        var h = Math.Max(1, (int)Math.Round(L.PageH * k));
+        var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        try
+        {
+            using var g = Graphics.FromImage(bmp);
+            g.Clear(Color.White);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.SmoothingMode = SmoothingMode.HighQuality;
+            g.SetClip(new RectangleF((float)(L.ContentX * k), (float)(L.ContentY * k), (float)(L.ContentW * k), (float)(L.ContentH * k)));
+            g.DrawImage(loaded.Bitmap, new RectangleF((float)(L.DrawX * k), (float)(L.DrawY * k), (float)(L.DrawW * k), (float)(L.DrawH * k)));
+            return bmp;
+        }
+        catch { bmp.Dispose(); throw; }
+    }
 
     // ───────────────────────── PDF → image(s) ─────────────────────────
 
@@ -90,6 +121,8 @@ public sealed class ImagePdfService
     /// <summary>Renders one page as PDFium shows it (the PDF's own /Rotate applied, user rotation NOT applied).</summary>
     public Bitmap RenderBitmap(string pdfPath, int pageIndex, double dpi)
     {
+        if (ImagePageSources.TryGetValue(pdfPath, out var imgSrc))
+            return RenderImagePage(imgSrc, pageIndex, Math.Clamp(Math.Round(dpi), 20, 600) / 72.0);
         using var sk = RenderSk(pdfPath, pageIndex, (int)Math.Clamp(Math.Round(dpi), 20, 600));
         return ToBitmap(sk, SKEncodedImageFormat.Jpeg, 92);
     }
@@ -100,6 +133,8 @@ public sealed class ImagePdfService
     /// </summary>
     public Bitmap RenderBitmapLossless(string pdfPath, int pageIndex, int dpi)
     {
+        if (ImagePageSources.TryGetValue(pdfPath, out var imgSrc))
+            return RenderImagePage(imgSrc, pageIndex, Math.Clamp(dpi, 20, 600) / 72.0);
         using var sk = RenderSk(pdfPath, pageIndex, Math.Clamp(dpi, 20, 600));
         if (sk.ColorType == SKColorType.Bgra8888 && sk.Width > 0 && sk.Height > 0)
         {
@@ -123,6 +158,8 @@ public sealed class ImagePdfService
 
     private static SKBitmap RenderSk(string pdfPath, int pageIndex, int dpi)
     {
+        // Never touch PDFtoImage when pdfium.dll is missing: its static handle would throw again from the finalizer thread.
+        if (!NativeSupport.PdfiumAvailable) throw new InvalidOperationException(NativeSupport.PdfiumMissingMessage);
         lock (PdfiumGate)
         {
             using var input = File.OpenRead(pdfPath);

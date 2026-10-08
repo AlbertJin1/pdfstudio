@@ -34,7 +34,7 @@ echo PDF Studio build complete.
 echo Output: %~dp0publish\PdfStudio.exe
 echo Self-contained: YES
 echo Runtime: win-x64
-echo Single-file: YES (native DLLs sit next to the exe - ship the whole publish folder)
+echo Single-file: YES (pdfium.dll and libSkiaSharp.dll are bundled inside the exe - ship only PdfStudio.exe)
 echo ============================================================
 exit /b 0
 
@@ -49,7 +49,7 @@ set "PUBLISH_TARGET_NAME=%~1"
 echo Publishing PdfStudio.exe (self-contained, single file)...
 dotnet publish PdfStudioCS.csproj -c Release -r win-x64 --self-contained true ^
   -p:PublishSingleFile=true ^
-  -p:IncludeNativeLibrariesForSelfExtract=false ^
+  -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=false ^
   -o "%~dp0publish"
 if not errorlevel 1 exit /b 0
@@ -61,7 +61,7 @@ timeout /t 3 /nobreak >nul
 
 dotnet publish PdfStudioCS.csproj -c Release -r win-x64 --self-contained true ^
   -p:PublishSingleFile=true ^
-  -p:IncludeNativeLibrariesForSelfExtract=false ^
+  -p:IncludeNativeLibrariesForSelfExtract=true ^
   -p:EnableCompressionInSingleFile=false ^
   -o "%~dp0publish"
 if not errorlevel 1 exit /b 0

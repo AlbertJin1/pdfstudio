@@ -15,16 +15,16 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <!-- Packer-style options (compressed bundle + extracting DLLs to %TEMP% at start-up) look like malware droppers to heuristic scanners, so they are off. -->
-    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <!-- pdfium.dll and libSkiaSharp.dll are bundled INSIDE PdfStudio.exe and unpacked by the .NET host on first start, so the single exe works on its own (and the in-app updater, which replaces only the exe, can never leave it without them). Bundle compression stays off because compressed bundles look like packers to heuristic scanners. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <AssemblyTitle>PDF Studio</AssemblyTitle>
     <Product>PDF Studio</Product>
     <Description>PDF Studio — merge, reorder, edit, convert and export PDF pages.</Description>
     <Company>Jessie Albert Regualos</Company>
     <Authors>Jessie Albert Regualos</Authors>
-    <Version>2.6.4</Version>
-    <FileVersion>2.6.4.0</FileVersion>
+    <Version>2.6.6</Version>
+    <FileVersion>2.6.6.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
       <Copyright>© Jessie Albert Regualos</Copyright>
   </PropertyGroup>

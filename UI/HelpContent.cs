@@ -37,7 +37,7 @@ public static class HelpContent
 - Pictures: PNG, JPG, BMP, GIF, TIFF (multi-page TIFFs too) and WebP. A small dialog lets you choose the page size and fit.
 
 ## Ways to add
-- Add files button: Add PDFs, Add images.
+- Add files button: Add PDFs, Add images. Added images become pages in the workspace; no PDF is saved until you export. Convert > Images → PDF saves a PDF file directly.
 - Drag files from Windows Explorer onto the window to add them at the end.
 - Drag files between two thumbnails to insert them exactly there (an insertion line shows where).
 - More tools > Insert PDF after selection puts a whole PDF right after the selected page.

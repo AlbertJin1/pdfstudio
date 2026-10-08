@@ -21,6 +21,30 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.6.6", new DateOnly(2026, 10, 8), "One exe: everything is packaged inside PdfStudio.exe.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "PDFium (pdfium.dll) and SkiaSharp (libSkiaSharp.dll) are now bundled inside PdfStudio.exe. Ship and update just the exe; no loose DLLs are needed beside it."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF page previews no longer vanish after an exe-only copy or update, which is what caused the \"Dll was not found\" error."
+            })
+        }),
+        new("2.6.5", new DateOnly(2026, 10, 8), "Add images properly: they only become pages, and many at once is safe.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Add images now just adds the pictures to the workspace as pages (A4, fitted inside a 10 mm margin). No dialog opens and no PDF file is created or saved; the PDF is made when you export. Use Page size to change how the pages look.",
+                "Convert > Images → PDF is the separate converter that asks for the layout and saves a PDF file. Its Result option is gone because it always saves a file."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Adding many images no longer fails. Each picture is prepared on its own, so a single bad file is reported and skipped instead of stopping the rest, and memory use stays low.",
+                "The \"DLL was not found\" error (PDFium) no longer appears. When pdfium.dll is missing, PDF pages show \"Preview unavailable\" with a clear status message; pictures you add are still drawn in the page grid, the preview and Edit PDF."
+            })
+        }),
         new("2.6.4", new DateOnly(2026, 10, 8), "The monitor recognises a PC by its name, so one PC stays one install.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]

@@ -459,10 +459,24 @@ public sealed partial class MainForm
         if (d.ShowDialog(this) == DialogResult.OK) await AddFilesAsync(d.FileNames, -1);
     }
 
+    /// <summary>"Add images": the pictures become pages in the workspace. No dialog and no PDF file is made here.</summary>
     private async Task PickImagesFlow()
     {
         using var d = new OpenFileDialog { Filter = ImagePdfService.ImageFilter, Multiselect = true, Title = "Choose images" };
         if (d.ShowDialog(this) == DialogResult.OK) await AddFilesAsync(d.FileNames, -1);
+    }
+
+    /// <summary>Convert › Images → PDF: the explicit converter. Pick pictures, choose the layout, save a PDF file.</summary>
+    private async Task ImagesToPdfFlow()
+    {
+        if (busy) return;
+        using var d = new OpenFileDialog { Filter = ImagePdfService.ImageFilter, Multiselect = true, Title = "Choose images to convert" };
+        if (d.ShowDialog(this) != DialogResult.OK) return;
+        var picked = d.FileNames.Where(f => File.Exists(f) && ImagePdfService.IsImage(f)).ToList();
+        if (picked.Count == 0) { SetStatus("Nothing to convert — choose picture files."); return; }
+        using var dlg = new ImageToPdfDialog(picked);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        await SaveImagesAsPdf(dlg.Images, dlg.Options);
     }
 
     private async Task InsertPdfAfterSelection()
@@ -520,20 +534,37 @@ public sealed partial class MainForm
             if (!unlocked) errors.Add($"{name} — skipped (password not provided or not accepted).");
         }
 
+        // Pictures are only ADDED as pages here (one at a time, so one bad file never stops the rest, and many
+        // pictures never pile up in memory). Nothing is saved: the PDF is made when the user exports.
         if (imgs.Count > 0)
         {
-            using var dlg = new ImageToPdfDialog(imgs);
-            if (dlg.ShowDialog(this) == DialogResult.OK)
+            var opts = new ImagePdfOptions { PageSize = ImagePdfPageSize.A4, Orientation = ImagePdfOrientation.Auto, Fit = ImagePdfFit.Contain, MarginMm = 10 };
+            var perImage = new List<PageItem>?[imgs.Count];
+            var imageErrors = new string?[imgs.Count];
+            await RunBusy("Adding images…", () =>
             {
-                var list = dlg.Images; var opts = dlg.Options;
-                if (dlg.AddToWorkspace)
+                for (var i = 0; i < imgs.Count; i++)
                 {
-                    var tmp = Path.Combine(sessionDir, $"Images {++tempCounter}.pdf");
-                    if (await RunBusy("Creating pages from images…", () => images.ImagesToPdf(tmp, list, opts)))
-                        added.AddRange(pdf.LoadPages(tmp, "Images"));
+                    var img = imgs[i];
+                    var tmp = Path.Combine(sessionDir, $"Image {Interlocked.Increment(ref tempCounter)}.pdf");
+                    try
+                    {
+                        images.ImagesToPdf(tmp, new[] { img }, opts);
+                        ImagePdfService.ImagePageSources[tmp] = new ImagePageSource(img, opts);
+                        perImage[i] = pdf.LoadPages(tmp, Path.GetFileName(img));
+                    }
+                    catch (Exception ex)
+                    {
+                        ImagePdfService.ImagePageSources.TryRemove(tmp, out _);
+                        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                        imageErrors[i] = $"{Path.GetFileName(img)} — {Friendly(ex)}";
+                    }
+                    var done = i + 1;
+                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(() => SetStatus($"Adding images… {done} of {imgs.Count}")); } catch { }
                 }
-                else await SaveImagesAsPdf(list, opts);
-            }
+            });
+            foreach (var l in perImage) if (l is not null) added.AddRange(l);
+            errors.AddRange(imageErrors.Where(e => e is not null).Select(e => e!));
         }
 
         if (added.Count > 0)
@@ -542,7 +573,9 @@ public sealed partial class MainForm
             Edit(() => pages.InsertRange(at, added));
             // Newly added pages are deliberately NOT auto-selected; the user's selection is kept.
             grid.EnsureVisible(pages.IndexOf(added[0]));
-            Notify($"Added {added.Count} page(s).");
+            Notify(imgs.Count > 0 && pdfs.Count == 0
+                ? $"Added {added.Count} image(s) as pages. Nothing is saved until you export."
+                : $"Added {added.Count} page(s).");
         }
         if (errors.Count > 0)
             MessageBox.Show(this, "Some files could not be added:\n\n" + string.Join("\n", errors), "PDF Studio", MessageBoxButtons.OK, MessageBoxIcon.Warning);

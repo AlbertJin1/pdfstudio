@@ -5,6 +5,28 @@ All notable changes to PDF Studio are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). Dates are in ISO 8601 format (YYYY-MM-DD).
 The same entries are shown in the app under **Help (F1) › Version history**.
 
+## [2.6.6] - 2026-10-08
+
+_One exe: everything is packaged inside PdfStudio.exe._
+
+### Changed
+- PDFium (pdfium.dll) and SkiaSharp (libSkiaSharp.dll) are now bundled inside PdfStudio.exe. Ship and update just the exe; no loose DLLs are needed beside it.
+
+### Fixed
+- PDF page previews no longer vanish after an exe-only copy or update, which is what caused the "Dll was not found" error.
+
+## [2.6.5] - 2026-10-08
+
+_Add images properly: they only become pages, and many at once is safe._
+
+### Changed
+- Add images now just adds the pictures to the workspace as pages (A4, fitted inside a 10 mm margin). No dialog opens and no PDF file is created or saved; the PDF is made when you export. Use Page size to change how the pages look.
+- Convert > Images → PDF is the separate converter that asks for the layout and saves a PDF file. Its Result option is gone because it always saves a file.
+
+### Fixed
+- Adding many images no longer fails. Each picture is prepared on its own, so a single bad file is reported and skipped instead of stopping the rest, and memory use stays low.
+- The "DLL was not found" error (PDFium) no longer appears. When pdfium.dll is missing, PDF pages show "Preview unavailable" with a clear status message; pictures you add are still drawn in the page grid, the preview and Edit PDF.
+
 ## [2.6.4] - 2026-10-08
 
 _The monitor recognises a PC by its name, so one PC stays one install._

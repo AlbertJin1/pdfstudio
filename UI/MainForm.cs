@@ -57,6 +57,8 @@ public sealed partial class MainForm : Form
         KeyPreview = true; AllowDrop = true;
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? Application.ExecutablePath); } catch { }
         Directory.CreateDirectory(sessionDir);
+        // Tell the user, once and quietly, if PDF previews cannot work (images added as pages still do).
+        Shown += (_, _) => { if (!NativeSupport.PdfiumAvailable) SetStatus(NativeSupport.PdfiumMissingMessage); };
 
         thumbs = new ThumbnailCache();
         thumbs.Attach(this);
@@ -134,7 +136,7 @@ public sealed partial class MainForm : Form
             ("PDF → Word…", () => Fire(PdfToWordFlow())),
             ("-", null),
             ("PDF → Images…", () => Fire(PdfToImagesFlow())),
-            ("Images → PDF…", () => Fire(PickImagesFlow())));
+            ("Images → PDF…", () => Fire(ImagesToPdfFlow())));
         var helpBtn = Hb("", "\uE897", BtnKind.Secondary, () => ShowHelp(), "Help and user guide (F1)");
         var aboutBtn = Hb("", "\uE946", BtnKind.Secondary, ShowAbout, "About PDF Studio and the developer");
         reviewBtn = Hb("Review", "\uE734", BtnKind.Secondary, ShowReview, "Rate PDF Studio and send the developer a review", 48);
