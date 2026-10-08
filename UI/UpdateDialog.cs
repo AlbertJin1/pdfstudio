@@ -12,6 +12,7 @@ public sealed class UpdateDialog : Form
     private readonly ReleaseNotesView notes = new() { Dock = DockStyle.Fill };
     private readonly ProgressBar bar = new() { Style = ProgressBarStyle.Continuous, Minimum = 0, Maximum = 1000, Dock = DockStyle.Fill, Visible = false };
     private readonly Txt status = new("", 8.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private readonly Txt detail = new("", 9f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, Visible = false };
     private readonly FlatButton skip, later, install;
     private CancellationTokenSource? cts;
     private bool busy;
@@ -55,18 +56,20 @@ public sealed class UpdateDialog : Form
         row.Controls.Add(status, 0, 0); row.Controls.Add(skip, 1, 0); row.Controls.Add(later, 2, 0); row.Controls.Add(install, 3, 0);
         footer.Controls.Add(row);
         AcceptButton = install; CancelButton = later;
+        status.Text = DownloadSizeText();
 
         // body
         var body = new Surface { Dock = DockStyle.Fill, Padding = new Padding(S(28), S(22), S(28), S(8)) };
         body.UseRole(() => Theme.Surface);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Color.Transparent };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Color.Transparent };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(76)));    // hero: icon, title, version chips
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(30)));    // "What's new" + number of changes
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));       // release notes
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(22)));    // "12.3 of 28.9 MB · 42% · 2.1 MB/s · 8 s left"
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
 
-        layout.Controls.Add(new UpdateHero("A new version is available", $"PDF Studio {update.Version} is ready to install.", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
+        layout.Controls.Add(new UpdateHero("A new version is available", $"PDF Studio {update.Version} is ready to install  \u00B7  {UpdateService.FormatSize(update.DownloadSize)} download", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
 
         var parsed = UpdateNotes.Parse(update.Notes);
         var whatsNew = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
@@ -84,7 +87,8 @@ public sealed class UpdateDialog : Form
         frame.Controls.Add(notes);
         layout.Controls.Add(frame, 0, 2);
         bar.Margin = new Padding(0, S(8), 0, S(4));
-        layout.Controls.Add(bar, 0, 3);
+        layout.Controls.Add(detail, 0, 3);
+        layout.Controls.Add(bar, 0, 4);
         body.Controls.Add(layout);
 
         Controls.Add(body); Controls.Add(footer);
@@ -102,11 +106,35 @@ public sealed class UpdateDialog : Form
         }
         SetBusy(true);
         cts = new CancellationTokenSource();
-        var progress = new Progress<double>(p =>
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        long lastDone = 0;
+        var progress = new Progress<UpdateProgress>(p =>
         {
             if (IsDisposed) return;
-            bar.Value = Math.Clamp((int)(p * 1000), 0, 1000);
-            status.Text = $"Downloading…  {p * 100:0}%";
+            bar.Value = Math.Clamp((int)(p.Fraction * 1000), 0, 1000);
+            switch (p.Phase)
+            {
+                case UpdatePhase.Fallback:
+                    clock.Restart(); lastDone = 0;
+                    detail.Text = "The compressed package is not available - downloading the full update…";
+                    break;
+                case UpdatePhase.Verifying: detail.Text = "Checking the download…"; break;
+                case UpdatePhase.Unpacking: detail.Text = "Unpacking the update…"; break;
+                default:
+                    if (p.Done < lastDone) clock.Restart();                  // a new file started (fallback)
+                    lastDone = p.Done;
+                    var text = $"Downloading  {UpdateService.FormatSize(p.Done)} of {UpdateService.FormatSize(p.Total)}  \u00B7  {(p.Total > 0 ? 100.0 * p.Done / p.Total : 0):0}%";
+                    var secs = clock.Elapsed.TotalSeconds;
+                    if (secs >= 1.5 && p.Done > 0)
+                    {
+                        var rate = p.Done / secs;                            // bytes per second since the file started
+                        text += $"  \u00B7  {UpdateService.FormatSize((long)rate)}/s";
+                        var left = (p.Total - p.Done) / rate;
+                        if (left >= 1) text += left < 90 ? $"  \u00B7  {Math.Ceiling(left):0} s left" : $"  \u00B7  {Math.Ceiling(left / 60):0} min left";
+                    }
+                    detail.Text = text;
+                    break;
+            }
         });
         try
         {
@@ -116,7 +144,7 @@ public sealed class UpdateDialog : Form
         }
         catch (OperationCanceledException)
         {
-            if (!IsDisposed) { SetBusy(false); status.Text = "Download cancelled."; }
+            if (!IsDisposed) { SetBusy(false); status.Text = "Download cancelled.  " + DownloadSizeText(); }
         }
         catch (Exception ex)
         {
@@ -131,7 +159,17 @@ public sealed class UpdateDialog : Form
         install.Enabled = !on; skip.Enabled = !on;
         later.Text = on ? "Cancel" : "Later";
         later.FitNow();
-        if (on) status.Text = "Starting download…";
+        detail.Visible = on;
+        if (on) detail.Text = "Starting download…";
+    }
+
+    /// <summary>"Download size: 28.9 MB (compressed - the full app is 38.1 MB)".</summary>
+    private string DownloadSizeText()
+    {
+        if (update.DownloadSize <= 0) return "";
+        var text = "Download size: " + UpdateService.FormatSize(update.DownloadSize);
+        if (update.Compressed && update.Size > update.ZipSize) text += $"  (compressed; the app is {UpdateService.FormatSize(update.Size)})";
+        return text;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

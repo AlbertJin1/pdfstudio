@@ -5,6 +5,17 @@ All notable changes to PDF Studio are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). Dates are in ISO 8601 format (YYYY-MM-DD).
 The same entries are shown in the app under **Help (F1) › Version history**.
 
+## [2.7.0] - 2026-10-08
+
+_Smaller releases: the exe is zipped for upload and for in-app updates._
+
+### Added
+- The update window shows how big the download is before you start, and while downloading it shows the megabytes received, the percentage, the speed and the time left.
+
+### Changed
+- Updates now download a compressed package (about half the size of the exe) and PDF Studio unpacks it itself before restarting. If the package is unavailable or fails its check, the full exe is downloaded instead, so an update never gets stuck.
+- Releasing uploads a zip of the signed exe instead of the exe itself, roughly halving the upload. The monitor verifies and unpacks it, and still keeps the plain exe for older copies.
+
 ## [2.6.6] - 2026-10-08
 
 _One exe: everything is packaged inside PdfStudio.exe._

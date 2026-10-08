@@ -21,6 +21,18 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.7.0", new DateOnly(2026, 10, 8), "Smaller releases: the exe is zipped for upload and for in-app updates.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "The update window shows how big the download is before you start, and while downloading it shows the megabytes received, the percentage, the speed and the time left."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Updates now download a compressed package (about half the size of the exe) and PDF Studio unpacks it itself before restarting. If the package is unavailable or fails its check, the full exe is downloaded instead, so an update never gets stuck.",
+                "Releasing uploads a zip of the signed exe instead of the exe itself, roughly halving the upload. The monitor verifies and unpacks it, and still keeps the plain exe for older copies."
+            })
+        }),
         new("2.6.6", new DateOnly(2026, 10, 8), "One exe: everything is packaged inside PdfStudio.exe.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Changed, new[]

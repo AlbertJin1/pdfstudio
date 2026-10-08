@@ -17,8 +17,8 @@ No GitHub, no tokens, nothing to configure: the updater uses the same server add
 
 1. Raise `<Version>` **and** `<FileVersion>` in `PdfStudioCS.csproj` to the same number (e.g. `2.7.0` / `2.7.0.0`) and add the
    CHANGELOG.md and Services/ChangeLog.cs entries (the build already enforces this).
-2. Run `release.bat`. It builds `publish\PdfStudio.exe` and shows the version that is inside the exe.
-3. Open the monitor → **Releases**, drop `PdfStudio.exe` in, optionally type *What's new*, press **Upload release**.
+2. Run `release.bat`. It builds `publish\PdfStudio.exe`, shows the version inside it, then uploads a zip of it to the monitor.
+3. Open the monitor → **Releases**, drop `PdfStudio.exe` (or a `.zip` containing it) in, optionally type *What's new*, press **Upload release**.
 
 You never type a version number: the monitor reads it from the exe and stores the file as
 `release/<version>/PdfStudio.exe` (e.g. `release/2.7.0/PdfStudio.exe`). The highest version is what the app is offered.
@@ -41,4 +41,12 @@ Only `major.minor.build` counts; the 4th number is ignored.
 * A version released here cannot be installed by copies **older than the first build that contains this updater**; those
   must be replaced by hand once.
 * If the monitor is offline when the app starts, nothing is shown (a manual check from About shows the reason).
-* Each update download is the full exe (tens of MB) sent through your ngrok tunnel: mind the data allowance of your ngrok plan.
+* **Smaller transfers (v2.7.0+).** `release.bat` zips the signed exe (deflate, smallest size) and uploads `PdfStudio.zip`, so the upload is
+  about half the size. The monitor checks the zip's SHA-256, unpacks it, checks the exe inside (SHA-256, version, product name) and
+  stores both `release/<version>/PdfStudio.exe` (older copies download this, unchanged) and `PdfStudio.zip` (current copies download
+  this, unpack it to `PdfStudio.exe.new` and verify the exe's own SHA-256 before swapping). If the zip is missing or fails a check,
+  the app silently downloads the full exe. The monitor builds the zip itself for releases uploaded as a plain exe or on the web page
+  (also for older releases, on first request). `publish_to_monitor.ps1 -NoZip` uploads the plain exe. Needs only PHP's zlib extension.
+  Copies older than 2.7.0 still download the full exe once, to get to 2.7.0 or later.
+* Not done: binary delta patches (sending only what changed between two versions). They would shrink updates further but need a
+  patch tool on both sides; the exe bundles the whole .NET runtime, so most bytes are unchanged between releases and it could be worth it later.

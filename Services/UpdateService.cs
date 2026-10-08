@@ -7,7 +7,21 @@ using System.Text.Json;
 namespace PdfStudio.Services;
 
 /// <summary>A newer version offered by the monitor server.</summary>
-public sealed record UpdateInfo(string Version, string Notes, string DownloadUrl, long Size, string? Sha256);
+/// <remarks>Size / Sha256 describe the exe. ZipUrl / ZipSize / ZipSha256 (when the server has a compressed package, about half the size) describe the zip that holds it.</remarks>
+public sealed record UpdateInfo(string Version, string Notes, string DownloadUrl, long Size, string? Sha256,
+                                string? ZipUrl = null, long ZipSize = 0, string? ZipSha256 = null)
+{
+    /// <summary>True when the update is fetched as the compressed package.</summary>
+    public bool Compressed => !string.IsNullOrEmpty(ZipUrl) && ZipSize > 0 && !string.IsNullOrEmpty(ZipSha256);
+    /// <summary>Bytes that will actually be downloaded (0 when the server did not say).</summary>
+    public long DownloadSize => Compressed ? ZipSize : Size;
+}
+
+/// <summary>What the updater is doing right now (shown in the update window).</summary>
+public enum UpdatePhase { Downloading, Verifying, Unpacking, Fallback }
+
+/// <summary>Download progress: Fraction is the overall 0..1 for the progress bar; Done / Total are the bytes of the file being downloaded.</summary>
+public readonly record struct UpdateProgress(double Fraction, long Done, long Total, UpdatePhase Phase);
 
 /// <summary>Result of a check: Update is null when you are up to date; Error is set when the check itself failed.</summary>
 public sealed record UpdateCheck(UpdateInfo? Update, string? Error);
@@ -17,7 +31,9 @@ public sealed record UpdateCheck(UpdateInfo? Update, string? Error);
 /// The exe you upload on the monitor's "Releases" page is what every copy of PDF Studio is offered.
 ///
 ///  1. CheckAsync       GET  {monitor}/update.php?action=latest   -> newest uploaded version, notes, size and SHA-256.
-///  2. DownloadAsync    GET  {monitor}/update.php?action=download -> saves it next to the running exe as PdfStudio.exe.new and verifies it.
+///  2. DownloadAsync    GET  {monitor}/update.php?action=download&format=zip -> the compressed package (about half the size) is
+///                      downloaded, unpacked here to PdfStudio.exe.new and verified. If the server has no package, or anything
+///                      about it fails, the plain exe (action=download) is downloaded instead, so an update never gets stuck.
 ///  3. ApplyAndRestart  renames the running exe to PdfStudio.exe.old (Windows allows renaming a running exe, just not
 ///                      overwriting it), moves the new file into place and starts it. The new copy deletes the .old
 ///                      file on its next start (CleanupLeftovers).
@@ -30,6 +46,15 @@ public sealed record UpdateCheck(UpdateInfo? Update, string? Error);
 /// </summary>
 public static class UpdateService
 {
+    /// <summary>"28.9 MB", "512 KB" - sizes shown to the user (binary megabytes, like Windows Explorer).</summary>
+    public static string FormatSize(long bytes)
+    {
+        if (bytes <= 0) return "unknown size";
+        if (bytes < 1024 * 1024) return $"{Math.Max(1, (bytes + 512) / 1024)} KB";
+        var mb = bytes / 1048576.0;
+        return mb >= 100 ? $"{mb:0} MB" : $"{mb:0.0} MB";
+    }
+
     public static bool AutoCheck => AppSettings.GetBool("auto_update", true);
     public static string SkippedVersion { get => AppSettings.Get("update_skip"); set => AppSettings.Set("update_skip", value); }
 
@@ -57,6 +82,7 @@ public static class UpdateService
     private static string? ExePath => Environment.ProcessPath;
     private static string NewPath => ExePath + ".new";
     private static string OldPath => ExePath + ".old";
+    private static string ZipTempPath => ExePath + ".new.zip";
 
     private static bool IsDevHost(string? exe) =>
         string.IsNullOrEmpty(exe) || string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase);
@@ -108,12 +134,12 @@ public static class UpdateService
     public static void CleanupLeftovers()
     {
         if (string.IsNullOrEmpty(ExePath)) return;
-        var old = OldPath; var nw = NewPath;
+        var old = OldPath; var nw = NewPath; var zp = ZipTempPath;
         _ = Task.Run(async () =>
         {
             for (var i = 0; i < 10; i++)
             {
-                try { if (File.Exists(old)) File.Delete(old); if (File.Exists(nw)) File.Delete(nw); return; }
+                try { if (File.Exists(old)) File.Delete(old); if (File.Exists(nw)) File.Delete(nw); if (File.Exists(zp)) File.Delete(zp); return; }
                 catch { await Task.Delay(1000).ConfigureAwait(false); }
             }
         });
@@ -159,12 +185,20 @@ public static class UpdateService
             if (!TryParse(CurrentVersion, out var current) || newest <= current) return new UpdateCheck(null, null);
 
             var clean = $"{newest.Major}.{newest.Minor}.{newest.Build}";
+            string? zipUrl = null; long zipSize = 0; string? zipSha = null;
+            if (latest.TryGetProperty("package", out var pkg) && pkg.ValueKind == JsonValueKind.Object
+                && string.Equals(pkg.TryGetProperty("format", out var f) ? f.GetString() : null, "zip", StringComparison.OrdinalIgnoreCase)
+                && pkg.TryGetProperty("size", out var zs) && zs.TryGetInt64(out zipSize) && zipSize > 0
+                && pkg.TryGetProperty("sha256", out var zh) && !string.IsNullOrEmpty(zipSha = zh.GetString()))
+                zipUrl = Endpoint("action=download&format=zip&version=" + Uri.EscapeDataString(clean));
+            else { zipSize = 0; zipSha = null; }
             return new UpdateCheck(new UpdateInfo(
                 clean,
                 latest.TryGetProperty("notes", out var n) ? n.GetString() ?? "" : "",
                 Endpoint("action=download&version=" + Uri.EscapeDataString(clean)),
                 latest.TryGetProperty("size", out var s) && s.TryGetInt64(out var size) ? size : 0,
-                latest.TryGetProperty("sha256", out var h) ? h.GetString() : null), null);
+                latest.TryGetProperty("sha256", out var h) ? h.GetString() : null,
+                zipUrl, zipSize, zipSha), null);
         }
         catch (OperationCanceledException) { return new UpdateCheck(null, "The update server did not answer in time."); }
         catch (HttpRequestException) { return new UpdateCheck(null, "Could not reach the update server. Check your internet connection."); }
@@ -174,59 +208,110 @@ public static class UpdateService
 
     // ───────────────────────── 2. download ─────────────────────────
 
-    /// <summary>Downloads and verifies the new exe. Returns the path of PdfStudio.exe.new.</summary>
-    public static async Task<string> DownloadAsync(UpdateInfo update, IProgress<double>? progress, CancellationToken ct)
+    /// <summary>Downloads and verifies the new exe (through the compressed package when the server has one). Returns the path of PdfStudio.exe.new.</summary>
+    public static async Task<string> DownloadAsync(UpdateInfo update, IProgress<UpdateProgress>? progress, CancellationToken ct)
     {
         if (!CanSelfUpdate(out var why)) throw new InvalidOperationException(why);
         var target = NewPath;
         try
         {
-            using var req = Get(update.DownloadUrl);
-            using var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            if (res.StatusCode == HttpStatusCode.NotFound) throw new IOException("This version is no longer available on the update server.");
-            if (res.StatusCode == HttpStatusCode.Unauthorized) throw new IOException("The update server did not accept this app's access key.");
-            res.EnsureSuccessStatusCode();
-
-            var total = res.Content.Headers.ContentLength ?? update.Size;
-            await using (var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
-            await using (var dst = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+            if (!string.IsNullOrEmpty(update.ZipUrl) && update.ZipSize > 0 && !string.IsNullOrEmpty(update.ZipSha256))
             {
-                var buf = new byte[81920]; long done = 0; int n;
-                while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+                try
                 {
-                    await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
-                    done += n;
-                    if (total > 0) progress?.Report(Math.Min(1.0, (double)done / total));
+                    await DownloadZipAsync(update, target, progress, ct).ConfigureAwait(false);
+                    return target;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // Package missing or damaged: fall back to the full exe, which always works.
+                    TryDelete(target); TryDelete(ZipTempPath);
+                    progress?.Report(new UpdateProgress(0, 0, 0, UpdatePhase.Fallback));
                 }
             }
-
-            var len = new FileInfo(target).Length;
-            if (update.Size > 0 && len != update.Size) throw new IOException("The download is incomplete. Please try again.");
-
-            await using (var fs = File.OpenRead(target))
-            {
-                var head = new byte[2];
-                if (await fs.ReadAsync(head, ct).ConfigureAwait(false) != 2 || head[0] != (byte)'M' || head[1] != (byte)'Z')
-                    throw new IOException("The downloaded file is not a Windows program.");
-                if (!string.IsNullOrEmpty(update.Sha256))
-                {
-                    fs.Position = 0;
-                    var actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct).ConfigureAwait(false));
-                    if (!string.Equals(actual, update.Sha256, StringComparison.OrdinalIgnoreCase))
-                        throw new IOException("The downloaded file failed its integrity check and was discarded.");
-                }
-            }
+            await DownloadFileAsync(update.DownloadUrl, target, update.Size, progress, 1.0, 0.0, ct).ConfigureAwait(false);
+            await VerifyExeAsync(target, update, ct).ConfigureAwait(false);
             return target;
         }
         catch (HttpRequestException)
         {
-            try { if (File.Exists(target)) File.Delete(target); } catch { }
+            TryDelete(target); TryDelete(ZipTempPath);
             throw new IOException("Could not download the update. Check your internet connection and try again.");
         }
         catch
         {
-            try { if (File.Exists(target)) File.Delete(target); } catch { }
+            TryDelete(target); TryDelete(ZipTempPath);
             throw;
+        }
+    }
+
+    private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
+
+    /// <summary>Downloads the zip (0-95% of the progress bar), checks it, unpacks PdfStudio.exe to <paramref name="target"/> and verifies that.</summary>
+    private static async Task DownloadZipAsync(UpdateInfo update, string target, IProgress<UpdateProgress>? progress, CancellationToken ct)
+    {
+        var zipPath = ZipTempPath;
+        await DownloadFileAsync(update.ZipUrl!, zipPath, update.ZipSize, progress, 0.95, 0.0, ct).ConfigureAwait(false);
+        progress?.Report(new UpdateProgress(0.95, update.ZipSize, update.ZipSize, UpdatePhase.Verifying));
+        await using (var zs = File.OpenRead(zipPath))
+        {
+            var actual = Convert.ToHexString(await SHA256.HashDataAsync(zs, ct).ConfigureAwait(false));
+            if (!string.Equals(actual, update.ZipSha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("The downloaded package failed its integrity check.");
+        }
+        progress?.Report(new UpdateProgress(0.97, 0, 0, UpdatePhase.Unpacking));
+        await Task.Run(() =>
+        {
+            using var zip = System.IO.Compression.ZipFile.OpenRead(zipPath);
+            var entry = zip.Entries.FirstOrDefault(e => string.Equals(e.Name, "PdfStudio.exe", StringComparison.OrdinalIgnoreCase))
+                        ?? throw new IOException("The package does not contain PdfStudio.exe.");
+            if (update.Size > 0 && entry.Length != update.Size) throw new IOException("The package holds an unexpected file.");
+            System.IO.Compression.ZipFileExtensions.ExtractToFile(entry, target, true);
+        }, ct).ConfigureAwait(false);
+        TryDelete(zipPath);
+        progress?.Report(new UpdateProgress(0.98, 0, 0, UpdatePhase.Verifying));
+        await VerifyExeAsync(target, update, ct).ConfigureAwait(false);   // size, MZ header and the exe's own SHA-256
+        progress?.Report(new UpdateProgress(1.0, 0, 0, UpdatePhase.Verifying));
+    }
+
+    /// <summary>Streams <paramref name="url"/> to <paramref name="target"/>, reporting progress as offset + fraction * scale.</summary>
+    private static async Task DownloadFileAsync(string url, string target, long expectedSize, IProgress<UpdateProgress>? progress, double scale, double offset, CancellationToken ct)
+    {
+        using var req = Get(url);
+        using var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        if (res.StatusCode == HttpStatusCode.NotFound) throw new IOException("This version is no longer available on the update server.");
+        if (res.StatusCode == HttpStatusCode.Unauthorized) throw new IOException("The update server did not accept this app's access key.");
+        res.EnsureSuccessStatusCode();
+
+        var total = res.Content.Headers.ContentLength ?? expectedSize;
+        await using (var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+        await using (var dst = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+        {
+            var buf = new byte[81920]; long done = 0; int n;
+            while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+            {
+                await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
+                done += n;
+                if (total > 0) progress?.Report(new UpdateProgress(offset + scale * Math.Min(1.0, (double)done / total), done, total, UpdatePhase.Downloading));
+            }
+        }
+        if (expectedSize > 0 && new FileInfo(target).Length != expectedSize) throw new IOException("The download is incomplete. Please try again.");
+    }
+
+    private static async Task VerifyExeAsync(string target, UpdateInfo update, CancellationToken ct)
+    {
+        if (update.Size > 0 && new FileInfo(target).Length != update.Size) throw new IOException("The download is incomplete. Please try again.");
+        await using var fs = File.OpenRead(target);
+        var head = new byte[2];
+        if (await fs.ReadAsync(head, ct).ConfigureAwait(false) != 2 || head[0] != (byte)'M' || head[1] != (byte)'Z')
+            throw new IOException("The downloaded file is not a Windows program.");
+        if (!string.IsNullOrEmpty(update.Sha256))
+        {
+            fs.Position = 0;
+            var actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct).ConfigureAwait(false));
+            if (!string.Equals(actual, update.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("The downloaded file failed its integrity check and was discarded.");
         }
     }
 
