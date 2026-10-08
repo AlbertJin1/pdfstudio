@@ -18,6 +18,7 @@ public class FlatButton : Button
     public bool GlyphIsText { get; set; }
     public bool Vertical { get; set; }
     public bool DangerStyle { get; set; }
+    public float GlyphTextSize { get; set; } = 0f;
     public bool Active { get; set; }
     private ContextMenuStrip? dropMenu;
     private bool menuOpen;
@@ -112,7 +113,9 @@ public class FlatButton : Button
     protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); FitNow(); Repaint(); }
     protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); FitNow(); }
 
-    private Font IconFont => GlyphIsText ? Theme.Ui(Vertical ? 14f : 11f) : Theme.Icons(Vertical ? 15f : 11.5f);
+    private Font IconFont => GlyphIsText
+        ? Theme.Ui(GlyphTextSize > 0 ? GlyphTextSize : (Vertical ? 14f : 11f))
+        : Theme.Icons(Vertical ? 15f : 11.5f);
     private const TextFormatFlags MeasureFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
     /// <summary>Width needed to show glyph, caption and chevron with comfortable side padding.</summary>

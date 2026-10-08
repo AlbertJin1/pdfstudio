@@ -26,6 +26,11 @@ This is the current feature set. What changed in each version, and when, is in `
 - PDF → images: PNG, JPEG, WebP, BMP, TIFF, GIF; 36–1200 dpi; JPEG/WebP quality; all / selected / range of pages
 - Images → PDF: PNG, JPG, BMP, GIF, TIFF (multi-page), WebP; page size = same as image, A4, A3, A5, B5, Letter, Legal, Tabloid or custom mm; orientation auto / portrait / landscape; fit inside / fill / stretch / actual size; margin; live to-scale preview; EXIF rotation honoured; JPEGs embedded losslessly
 
+## Device access control
+- PDF Studio can be enabled or disabled per monitored Windows device by an administrator.
+- Access is checked in the background and rechecked every 30 seconds; startup does not require server authentication.
+- A previously disabled device stays locked offline until the monitor restores access.
+
 ## Interface
 - Light and dark themes (remembered), owner-drawn flat controls, high-DPI aware
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.8.0] - 2026-10-09
+
+_Device-level administrator access control through the PDF Studio Monitor._
+
+### Added
+- PDF Studio can be enabled or disabled per monitored Windows device from the administrator dashboard.
+- Disabled devices show a clear in-app access lock and remain blocked until an administrator restores access.
+- Access decisions are cached locally, so a previously disabled device stays locked even if the monitor is temporarily unreachable.
+- New or never-seen devices remain allowed by default; PDF Studio does not require server authentication to start.
+- The monitor records the access state, reason, administrator, timestamp and audit history for every policy change.
+- Access is rechecked automatically every 30 seconds while PDF Studio is running.
+
+### Changed
+- The PDF Studio Monitor dashboard now includes per-device access status and Enable / Disable controls.
+- Access changes are protected by the monitor's existing administrator login and CSRF protection.
+
 All notable changes to PDF Studio are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). Dates are in ISO 8601 format (YYYY-MM-DD).

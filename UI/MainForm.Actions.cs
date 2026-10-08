@@ -51,7 +51,7 @@ public sealed partial class MainForm
     /// <summary>Every page-list change goes through here so undo/redo, selection and preview stay consistent.</summary>
     private void Edit(Action change)
     {
-        if (busy) return;
+        if (busy || accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied) return;
         history.Push(Snapshot());
         change();
         dirty = true;
@@ -80,19 +80,31 @@ public sealed partial class MainForm
         if (undoBtn is null) return;
         var has = pages.Count > 0;
         var target = has && (grid.Selection.Count > 0 || grid.ActiveIndex >= 0);
-        undoBtn.Enabled = history.CanUndo; redoBtn.Enabled = history.CanRedo;
-        foreach (var b in new[] { rotLBtn, rotRBtn, delBtn, arrangeBtn, annotateBtn }) b.Enabled = target;
-        pagesBtn.Enabled = true;                      // "Insert blank page" works on an empty document too
-        extractMenuBtn.Enabled = moreBtn.Enabled = has;
-        newBtn.Enabled = has;
-        editBtn.Enabled = has;
-        exportBtn.Enabled = has;
-        pageSizeBtn.Enabled = has;
+        var pdfAccess = !accessDenied && AccessControlService.State != AccessControlService.AccessState.Denied;
+
+        undoBtn.Enabled = pdfAccess && history.CanUndo;
+        redoBtn.Enabled = pdfAccess && history.CanRedo;
+        rotLBtn.Enabled = rotRBtn.Enabled = delBtn.Enabled = pdfAccess && target;
+        arrangeBtn.Enabled = annotateBtn.Enabled = pdfAccess && target;
+        selectBtn.Enabled = pdfAccess;
+        pagesBtn.Enabled = pdfAccess;
+        extractMenuBtn.Enabled = moreBtn.Enabled = pdfAccess && has;
+        newBtn.Enabled = pdfAccess && has;
+        editBtn.Enabled = pdfAccess && has;
+        exportBtn.Enabled = pdfAccess && has;
+        pageSizeBtn.Enabled = pdfAccess && has;
+        convertBtn.Enabled = addBtn.Enabled = pdfAccess;
+        emptyAddPdfBtn.Enabled = emptyAddImageBtn.Enabled = pdfAccess;
+
+        zoomOutBtn.Enabled = zoomInBtn.Enabled = fitToggle.Enabled = previewToggle.Enabled = pdfAccess;
+        sizeBar.Enabled = pdfAccess;
+        preview.SetFeatureAccess(pdfAccess);
+        grid.Enabled = pdfAccess;
+
         emptyState.Visible = !has; grid.Visible = has;
         countText.Text = has ? $"{pages.Count} page(s)  •  {grid.Selection.Count} selected" : "";
-        convertBtn.Enabled = addBtn.Enabled = true;
         Text = has ? $"PDF Studio — {pages.Count} page(s)" : "PDF Studio";
-        if (!has && !busy) SetStatus("Add PDFs or images to begin.");
+        if (!has && !busy && !accessDenied) SetStatus("Add PDFs or images to begin.");
 
         // show / hide the preview pane when the document goes from empty to non-empty (and back)
         if (has != hadPages)

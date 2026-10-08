@@ -28,6 +28,10 @@ public sealed class PreviewPane : Surface
     private Point panStart;
     private bool panning;
     private bool pageChanged = true;
+    private bool featureAccessEnabled = true;
+
+    private FlatButton prevBtn = null!, nextBtn = null!, zoomOutBtn = null!, zoomInBtn = null!,
+        rotLeftBtn = null!, rotRightBtn = null!, addTextBtn = null!, addImageBtn = null!, clearBtn = null!;
 
     public event Action? RotateLeftClicked, RotateRightClicked, AddTextClicked, AddImageClicked, ClearTextClicked, PrevClicked, NextClicked;
     private readonly ToolTip tips = new() { InitialDelay = 450, ReshowDelay = 150, AutoPopDelay = 7000 };
@@ -42,11 +46,11 @@ public sealed class PreviewPane : Surface
         scroller.Controls.Add(pic);
         scroller.Resize += (_, _) => { if (fitMode) Schedule(); else CenterPicture(false); };
         scroller.MouseWheel += OnWheel; pic.MouseWheel += OnWheel;
-        pic.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left && scroller.AutoScroll) { panning = true; panStart = Cursor.Position; pic.Cursor = Cursors.SizeAll; } };
+        pic.MouseDown += (_, e) => { if (!featureAccessEnabled) return; if (e.Button == MouseButtons.Left && scroller.AutoScroll) { panning = true; panStart = Cursor.Position; pic.Cursor = Cursors.SizeAll; } };
         pic.MouseUp += (_, _) => { panning = false; pic.Cursor = fitMode ? Cursors.Default : Cursors.Hand; };
         pic.MouseMove += (_, _) =>
         {
-            if (!panning) return;
+            if (!featureAccessEnabled || !panning) return;
             var p = Cursor.Position; var dx = p.X - panStart.X; var dy = p.Y - panStart.Y; panStart = p;
             scroller.AutoScrollPosition = new Point(-scroller.AutoScrollPosition.X - dx, -scroller.AutoScrollPosition.Y - dy);
         };
@@ -69,19 +73,21 @@ public sealed class PreviewPane : Surface
             var g = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, BackColor = Color.Transparent, Margin = new Padding(0, 0, 10, 4), Padding = new Padding(0) };
             g.Controls.AddRange(items); return g;
         }
-        var prev = B("", "\uE76B", false, () => PrevClicked?.Invoke(), "Previous page");
-        var next = B("", "\uE76C", false, () => NextClicked?.Invoke(), "Next page");
-        var zOut = B("", "−", true, () => SetZoom(-10), "Zoom out (Ctrl + mouse wheel)");
-        var zIn = B("", "+", true, () => SetZoom(+10), "Zoom in (Ctrl + mouse wheel)");
+        var prev = prevBtn = B("", "\uE76B", false, () => PrevClicked?.Invoke(), "Previous page");
+        var next = nextBtn = B("", "\uE76C", false, () => NextClicked?.Invoke(), "Next page");
+        var zOut = zoomOutBtn = B("", "−", true, () => SetZoom(-10), "Zoom out (Ctrl + mouse wheel)");
+        var zIn = zoomInBtn = B("", "+", true, () => SetZoom(+10), "Zoom in (Ctrl + mouse wheel)");
         fitBtn.Margin = new Padding(1, 0, 1, 0); fitBtn.Active = true;
-        fitBtn.Click += (_, _) => { fitMode = true; Schedule(); UpdateZoomLabel(); };
+        fitBtn.Click += (_, _) => { if (!featureAccessEnabled) return; fitMode = true; Schedule(); UpdateZoomLabel(); };
         tips.SetToolTip(fitBtn, "Fit the whole page in the preview");
         zoomLabel.Margin = new Padding(0);
-        var rotL = B("", "⟲", true, () => RotateLeftClicked?.Invoke(), "Rotate left (Ctrl+←)");
-        var rotR = B("", "⟳", true, () => RotateRightClicked?.Invoke(), "Rotate right (Ctrl+→)");
-        var addT = B("Text", "\uE8D2", false, () => AddTextClicked?.Invoke(), "Add text to this page");
-        var addI = B("Image", "\uE91B", false, () => AddImageClicked?.Invoke(), "Add a logo, stamp or signature image");
-        var del = B("", "\uE74D", false, () => ClearTextClicked?.Invoke(), "Remove text and images from this page", true);
+        var rotL = rotLeftBtn = B("", "↺", true, () => RotateLeftClicked?.Invoke(), "Rotate left (Ctrl+←)");
+        rotL.GlyphTextSize = 16f;
+        var rotR = rotRightBtn = B("", "↻", true, () => RotateRightClicked?.Invoke(), "Rotate right (Ctrl+→)");
+        rotR.GlyphTextSize = 16f;
+        var addT = addTextBtn = B("Text", "\uE8D2", false, () => AddTextClicked?.Invoke(), "Add text to this page");
+        var addI = addImageBtn = B("Image", "\uE91B", false, () => AddImageClicked?.Invoke(), "Add a logo, stamp or signature image");
+        var del = clearBtn = B("", "\uE74D", false, () => ClearTextClicked?.Invoke(), "Remove text and images from this page", true);
 
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0), BackColor = Color.Transparent };
         bar.Controls.AddRange(new Control[] { Group(prev, next), Group(zOut, zoomLabel, zIn, fitBtn), Group(rotL, rotR), Group(addT, addI, del) });
@@ -107,6 +113,18 @@ public sealed class PreviewPane : Surface
 
     /// <summary>Re-measures the toolbar buttons (called once the window is shown and after DPI changes).</summary>
     public void RefreshLayout() { FlatButton.FitTree(this); }
+
+    public void SetFeatureAccess(bool enabled)
+    {
+        featureAccessEnabled = enabled;
+        prevBtn.Enabled = nextBtn.Enabled = zoomOutBtn.Enabled = zoomInBtn.Enabled = fitBtn.Enabled = enabled;
+        rotLeftBtn.Enabled = rotRightBtn.Enabled = addTextBtn.Enabled = addImageBtn.Enabled = clearBtn.Enabled = enabled;
+        scroller.Enabled = enabled;
+        pic.Enabled = enabled;
+        if (!enabled) { panning = false; pic.Cursor = Cursors.Default; }
+        else pic.Cursor = fitMode ? Cursors.Default : Cursors.Hand;
+        Invalidate(true);
+    }
 
     public void ShowPage(PageItem? page)
     {
@@ -134,6 +152,7 @@ public sealed class PreviewPane : Surface
 
     private void SetZoom(int delta)
     {
+        if (!featureAccessEnabled) return;
         if (fitMode) { fitMode = false; zoom = Math.Clamp(shownDpiPercent, 20, 400); }
         zoom = Math.Clamp(zoom + delta, 20, 400);
         UpdateZoomLabel(); Schedule();
@@ -147,7 +166,7 @@ public sealed class PreviewPane : Surface
 
     private void OnWheel(object? s, MouseEventArgs e)
     {
-        if ((ModifierKeys & Keys.Control) == 0) return;
+        if (!featureAccessEnabled || (ModifierKeys & Keys.Control) == 0) return;
         SetZoom(Math.Sign(e.Delta) * 10);
         if (e is HandledMouseEventArgs h) h.Handled = true;
     }

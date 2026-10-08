@@ -33,8 +33,9 @@ public sealed partial class MainForm : Form
     private readonly Dictionary<FlatButton, (string Text, int W, int H)> toolOriginals = new();
 
     private FlatButton newBtn = null!, undoBtn = null!, redoBtn = null!, rotLBtn = null!, rotRBtn = null!, delBtn = null!,
-        pagesBtn = null!, arrangeBtn = null!, annotateBtn = null!, extractMenuBtn = null!, moreBtn = null!, exportBtn = null!,
+        pagesBtn = null!, arrangeBtn = null!, selectBtn = null!, annotateBtn = null!, extractMenuBtn = null!, moreBtn = null!, exportBtn = null!,
         editBtn = null!, pageSizeBtn = null!, addBtn = null!, convertBtn = null!, fitToggle = null!, previewToggle = null!, reviewBtn = null!;
+    private FlatButton emptyAddPdfBtn = null!, emptyAddImageBtn = null!;
 
     private ExportOptions exportOptions = new();
     private bool busy, dirty;
@@ -43,6 +44,12 @@ public sealed partial class MainForm : Form
     private bool splitterInitialised;
     private bool hadPages;
     private System.Windows.Forms.Timer? reviewPromptTimer;
+    private Panel? accessOverlay;
+    private Txt? accessTitle;
+    private Txt? accessMessage;
+    private Txt? accessMeta;
+    private FlatButton? accessCloseButton;
+    private bool accessDenied;
 
     public MainForm()
     {
@@ -178,8 +185,10 @@ public sealed partial class MainForm : Form
         newBtn = Tool("New", "\uE8F4", NewDocument, "Start fresh: remove all pages and clear undo history (Ctrl+N)");
         undoBtn = Tool("Undo", "\uE7A7", Undo, "Undo the last change (Ctrl+Z)");
         redoBtn = Tool("Redo", "\uE7A6", Redo, "Redo (Ctrl+Y)");
-        rotLBtn = Tool("Rotate left", "⟲", () => Rotate(-90), "Rotate the selected pages left (Ctrl+←)", true);
-        rotRBtn = Tool("Rotate right", "⟳", () => Rotate(90), "Rotate the selected pages right (Ctrl+→)", true);
+        rotLBtn = Tool("Rotate left", "↺", () => Rotate(-90), "Rotate the selected pages left (Ctrl+←)", true);
+        rotLBtn.GlyphTextSize = 19f;
+        rotRBtn = Tool("Rotate right", "↻", () => Rotate(90), "Rotate the selected pages right (Ctrl+→)", true);
+        rotRBtn.GlyphTextSize = 19f;
         delBtn = Tool("Delete", "\uE74D", DeleteSelected, "Remove the selected pages (Del)", false, true);
 
         // grouped drop-downs (one button each instead of a long row of small ones)
@@ -200,7 +209,7 @@ public sealed partial class MainForm : Form
             ("Move to the end", () => MoveToEdge(false)),
             ("Move to page number…", MoveToPosition), ("-", null),
             ("Reverse order", ReversePages));
-        var selectBtn = Tool("Select", "\uE762", () => { }, "Selection helpers", false, false, true);
+        selectBtn = Tool("Select", "\uE762", () => { }, "Selection helpers", false, false, true);
         selectBtn.DropMenu = Menus.Make(
             ("Select all\tCtrl+A", () => grid.SelectAll()), ("Clear selection\tEsc", () => grid.ClearSelection()), ("Invert selection\tCtrl+I", () => grid.InvertSelection()), ("-", null),
             ("Odd pages", () => grid.SelectIndices(Enumerable.Range(0, pages.Count).Where(i => i % 2 == 0))),
@@ -300,6 +309,164 @@ public sealed partial class MainForm : Form
         split.Panel2.Controls.Add(preview);
 
         Controls.Add(split); Controls.Add(status); Controls.Add(footer); Controls.Add(ribbon); Controls.Add(header);
+        BuildAccessOverlay();
+    }
+
+    private void BuildAccessOverlay()
+    {
+        accessOverlay = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Visible = false,
+            BackColor = Theme.Window,
+            Padding = new Padding(24)
+        };
+
+        var card = new Surface
+        {
+            Width = Theme.S(620),
+            Height = Theme.S(330),
+            BackColor = Theme.Surface,
+            Padding = new Padding(Theme.S(34)),
+            Anchor = AnchorStyles.None
+        };
+        card.UseRole(() => Theme.Surface);
+
+        var icon = new Txt("\uE72E", 30f, FontStyle.Regular)
+        {
+            Font = Theme.Icons(34f),
+            ForeColor = Theme.Accent,
+            Dock = DockStyle.Top,
+            Height = Theme.S(62),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        accessTitle = new Txt("Checking device access…", 16f, FontStyle.Bold)
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.S(40),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        accessMessage = new Txt("PDF Studio is checking the access policy for this device. You do not need to sign in.", 10f, FontStyle.Regular, true)
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.S(70),
+            TextAlign = ContentAlignment.TopCenter
+        };
+        accessMeta = new Txt("", 8.5f, FontStyle.Regular, true)
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.S(34),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        accessCloseButton = new FlatButton
+        {
+            Text = "Close PDF Studio",
+            Glyph = "\uE8BB",
+            Kind = BtnKind.Secondary,
+            Height = Theme.S(40),
+            AutoWidth = true,
+            MinWidth = Theme.S(150),
+            Anchor = AnchorStyles.None
+        };
+        accessCloseButton.Click += (_, _) => Close();
+        accessCloseButton.FitNow();
+
+        var buttonHost = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.S(52),
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        buttonHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        buttonHost.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        buttonHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        buttonHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        accessCloseButton.Anchor = AnchorStyles.None;
+        accessCloseButton.Margin = Padding.Empty;
+        buttonHost.Controls.Add(accessCloseButton, 1, 0);
+
+        card.Controls.Add(buttonHost);
+        card.Controls.Add(accessMeta);
+        card.Controls.Add(accessMessage);
+        card.Controls.Add(accessTitle);
+        card.Controls.Add(icon);
+
+        accessOverlay.Controls.Add(card);
+        Controls.Add(accessOverlay);
+        accessOverlay.BringToFront();
+
+        void LayoutCard()
+        {
+            if (accessOverlay == null) return;
+            card.Location = new Point(
+                Math.Max(Theme.S(12), (accessOverlay.ClientSize.Width - card.Width) / 2),
+                Math.Max(Theme.S(12), (accessOverlay.ClientSize.Height - card.Height) / 2));
+        }
+        accessOverlay.Resize += (_, _) => LayoutCard();
+        Theme.Changed += () =>
+        {
+            if (accessOverlay == null || accessTitle == null || accessMessage == null || accessMeta == null) return;
+            accessOverlay.BackColor = Theme.Window;
+            card.UseRole(() => Theme.Surface);
+            accessTitle.ForeColor = Theme.Text;
+            accessMessage.ForeColor = Theme.Muted;
+            accessMeta.ForeColor = Theme.Muted;
+            icon.ForeColor = accessDenied ? Theme.Danger : Theme.Accent;
+            LayoutCard();
+        };
+        LayoutCard();
+    }
+
+    private void SetAccessOverlay(bool visible, bool denied, string reason = "")
+    {
+        if (IsDisposed || accessOverlay == null || accessTitle == null || accessMessage == null || accessMeta == null || accessCloseButton == null) return;
+        accessDenied = denied;
+        accessTitle.Text = denied ? "PDF Studio access is disabled" : "Checking device access…";
+        accessMessage.Text = denied
+            ? "An administrator has disabled PDF Studio for this device. The application will remain locked until access is restored in the PDF Studio Monitor."
+            : "PDF Studio is checking the access policy for this device. You do not need to sign in.";
+        accessMeta.Text = denied
+            ? (string.IsNullOrWhiteSpace(reason) ? "Contact your administrator to restore access." : reason)
+            : "If the monitor is unavailable, PDF Studio remains usable unless this device was previously disabled.";
+        accessCloseButton.Text = "Close PDF Studio";
+        accessCloseButton.FitNow();
+        UpdateUi();
+        accessOverlay.Visible = visible;
+        accessOverlay.BringToFront();
+        accessOverlay.Invalidate(true);
+        if (visible) accessCloseButton.Focus();
+    }
+
+    private void OnAccessStateChanged(AccessControlService.AccessResult result)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(new Action(() =>
+        {
+            if (result.State == AccessControlService.AccessState.Denied)
+            {
+                reviewPromptTimer?.Stop();
+                foreach (Form open in Application.OpenForms.Cast<Form>().ToArray())
+                {
+                    if (ReferenceEquals(open, this)) continue;
+                    if (open is EditorForm || open is ModernDialog)
+                    {
+                        try { open.DialogResult = DialogResult.Cancel; } catch { }
+                        try { open.Close(); } catch { }
+                    }
+                }
+                SetAccessOverlay(true, true, result.Reason);
+                SetStatus("Access disabled by administrator.");
+            }
+            else
+            {
+                SetAccessOverlay(false, false);
+                if (!accessDenied) SetStatus("Ready");
+            }
+        }));
     }
 
     private Surface BuildEmptyState()
@@ -333,8 +500,8 @@ public sealed partial class MainForm : Form
             var b = new FlatButton { Text = text, Glyph = glyph, Kind = k, Width = w, Height = 40, Margin = new Padding(0) };
             b.Click += (_, _) => a(); return b;
         }
-        buttons.Controls.Add(B("Add PDFs", "\uE710", BtnKind.Primary, 124, () => Fire(AddPdfsFlow())));
-        buttons.Controls.Add(B("Add images", "\uE91B", BtnKind.Secondary, 132, () => Fire(PickImagesFlow())));
+        buttons.Controls.Add(emptyAddPdfBtn = B("Add PDFs", "\uE710", BtnKind.Primary, 124, () => Fire(AddPdfsFlow())));
+        buttons.Controls.Add(emptyAddImageBtn = B("Add images", "\uE91B", BtnKind.Secondary, 132, () => Fire(PickImagesFlow())));
         buttons.Controls.Add(B("Help guide", "\uE897", BtnKind.Ghost, 124, () => ShowHelp()));
         var hint = new Txt("Tip: you can also drop files anywhere on this window.  Press F1 for the full guide.", 9f, FontStyle.Regular, true)
         { Dock = DockStyle.Top, Height = 30, TextAlign = ContentAlignment.MiddleCenter };
@@ -388,12 +555,12 @@ public sealed partial class MainForm : Form
     {
         grid.StateChanged += (_, _) => { UpdateUi(); ShowPreview(false); };
         grid.ReorderRequested += OnReorder;
-        grid.FilesDropped += (files, at) => Fire(AddFilesAsync(files, at));
-        grid.AddPdfRequested += () => Fire(AddPdfsFlow());
-        grid.QuickRotate += p => Edit(() => p.Rotation = PdfService.Norm(p.Rotation + 90));
-        grid.QuickDelete += p => Edit(() => pages.Remove(p));
+        grid.FilesDropped += (files, at) => { if (!accessDenied) Fire(AddFilesAsync(files, at)); };
+        grid.AddPdfRequested += () => { if (!accessDenied) Fire(AddPdfsFlow()); };
+        grid.QuickRotate += p => { if (!accessDenied) Edit(() => p.Rotation = PdfService.Norm(p.Rotation + 90)); };
+        grid.QuickDelete += p => { if (!accessDenied) Edit(() => pages.Remove(p)); };
         grid.PageOpened += p => { grid.SelectOnly(pages.IndexOf(p)); };
-        grid.ZoomWheel += d => sizeBar.Value = Math.Clamp(sizeBar.Value + d * 12, sizeBar.Minimum, sizeBar.Maximum);
+        grid.ZoomWheel += d => { if (!accessDenied) sizeBar.Value = Math.Clamp(sizeBar.Value + d * 12, sizeBar.Minimum, sizeBar.Maximum); };
         grid.ContextRequested += ShowContextMenu;
         sizeBar.ValueChanged += (_, _) => grid.TileWidth = sizeBar.Value;
 
@@ -405,8 +572,8 @@ public sealed partial class MainForm : Form
         preview.PrevClicked += () => { if (pages.Count > 0) grid.SelectOnly(Math.Max(0, grid.ActiveIndex - 1)); grid.EnsureVisible(grid.ActiveIndex); };
         preview.NextClicked += () => { if (pages.Count > 0) grid.SelectOnly(Math.Min(pages.Count - 1, Math.Max(0, grid.ActiveIndex) + 1)); grid.EnsureVisible(grid.ActiveIndex); };
 
-        DragEnter += (_, e) => e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true ? DragDropEffects.Copy : DragDropEffects.None;
-        DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] f) Fire(AddFilesAsync(f, -1)); };
+        DragEnter += (_, e) => e.Effect = !accessDenied && e.Data?.GetDataPresent(DataFormats.FileDrop) == true ? DragDropEffects.Copy : DragDropEffects.None;
+        DragDrop += (_, e) => { if (!accessDenied && e.Data?.GetData(DataFormats.FileDrop) is string[] f) Fire(AddFilesAsync(f, -1)); };
         KeyDown += OnKey;
         Shown += (_, _) =>
         {
@@ -417,6 +584,11 @@ public sealed partial class MainForm : Form
             preview.RefreshLayout();
             ApplyPreviewVisibility();
             grid.Relayout();
+            if (AccessControlService.State == AccessControlService.AccessState.Denied)
+                SetAccessOverlay(true, true, AccessControlService.Reason);
+            AccessControlService.StateChanged -= OnAccessStateChanged;
+            AccessControlService.StateChanged += OnAccessStateChanged;
+            AccessControlService.Start();
             UsageTracker.Start();
             ScheduleRandomReviewPrompt();
             if (UpdateService.AutoCheck)
@@ -447,6 +619,8 @@ public sealed partial class MainForm : Form
             AppSettings.SetBool("autofit", grid.AutoFit);
             AppSettings.SetBool("preview", previewPref);
             UsageTracker.Stop();
+            AccessControlService.StateChanged -= OnAccessStateChanged;
+            AccessControlService.Stop();
             try { reviewPromptTimer?.Stop(); reviewPromptTimer?.Dispose(); } catch { }
             reviewPromptTimer = null;
             thumbs.Dispose();
@@ -567,7 +741,7 @@ public sealed partial class MainForm : Form
         }
         else if (show) ConfigureSplitter();
         previewToggle.Active = show;
-        previewToggle.Enabled = hasPages && (side || stacked);
+        previewToggle.Enabled = !accessDenied && AccessControlService.State != AccessControlService.AccessState.Denied && hasPages && (side || stacked);
         previewToggle.Invalidate();
     }
 
@@ -600,6 +774,7 @@ public sealed partial class MainForm : Form
         if (busy) return;
         bool Do(Action a) { a(); e.SuppressKeyPress = true; e.Handled = true; return true; }
         if (e.KeyCode == Keys.F1) Do(() => ShowHelp());
+        else if (accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied) return;
         else if (e.Control && e.Shift && e.KeyCode == Keys.Left) Do(() => MoveSelected(-1));
         else if (e.Control && e.Shift && e.KeyCode == Keys.Right) Do(() => MoveSelected(1));
         else if (e.Control && e.Shift && e.KeyCode == Keys.S) Do(() => Fire(ExportAsync(true)));
@@ -625,7 +800,7 @@ public sealed partial class MainForm : Form
 
     private void ShowContextMenu(Point at)
     {
-        if (busy || pages.Count == 0) return;
+        if (busy || accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied || pages.Count == 0) return;
         var m = Menus.Make(
             ("Rotate right\tCtrl+→", () => Rotate(90)), ("Rotate left\tCtrl+←", () => Rotate(-90)), ("Rotate 180°", () => Rotate(180)),
             ("Duplicate\tCtrl+D", DuplicateSelected), ("Delete\tDel", DeleteSelected), ("-", null),

@@ -21,6 +21,20 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.8.0", new DateOnly(2026, 10, 9), "Device-level administrator access control through the PDF Studio Monitor.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "Administrators can enable or disable PDF Studio separately for each monitored Windows device.",
+                "Disabled devices show a clear access lock and remain blocked offline until access is restored.",
+                "The monitor keeps an audit trail with the administrator, reason and timestamp for each access change."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "PDF Studio does not require server authentication to start. New or never-seen devices remain usable by default.",
+                "The application checks its device policy in the background and rechecks it every 30 seconds."
+            })
+        }),
         new("2.7.0", new DateOnly(2026, 10, 8), "Smaller releases: the exe is zipped for upload and for in-app updates.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]
