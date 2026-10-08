@@ -64,7 +64,7 @@ the Align buttons / "Snap to best spot", and the Apply / Cancel bar shown above 
 
 ## Usage monitoring and reviews (2.6.0)
 
-PDF Studio reports anonymous usage (opens and open time, always on - the Review window has no checkbox for it) and optional user reviews to the **PDF Studio Monitor** PHP web app (`pdfstudio-monitor/`), reached through ngrok. See `pdfstudio-monitor/README.md` for the server setup. Client settings live in `%LOCALAPPDATA%\PdfStudio\settings.txt` (`usage_stats`, `monitor_url`, `monitor_key`); the defaults are in `Services/UsageTracker.cs`.
+PDF Studio reports usage (opens and open time, plus the PC's name and LAN IP so one PC keeps one install id; always on - the Review window has no checkbox for it) and optional user reviews to the **PDF Studio Monitor** PHP web app (`pdfstudio-monitor/`), reached through ngrok. See `pdfstudio-monitor/README.md` for the server setup. Client settings live in `%LOCALAPPDATA%\PdfStudio\settings.txt` (`usage_stats`, `monitor_url`, `monitor_key`); the defaults are in `Services/UsageTracker.cs`.
 
 ## Updates
 The app updates itself from the PDF Studio Monitor server: upload the new `PdfStudio.exe` on the monitor's **Releases** page and every copy offers it (update now / later / skip) the next time it starts. See `UPDATES.md`.

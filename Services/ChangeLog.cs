@@ -21,6 +21,17 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.6.4", new DateOnly(2026, 10, 8), "The monitor recognises a PC by its name, so one PC stays one install.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "Usage statistics now include the PC's name and its network (LAN) address. The monitor shows both next to every session and install."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "A PC no longer shows up as a new install when its settings file is lost or reset (reinstall, cleaned profile, another Windows user on the same PC). The monitor matches the PC name, returns the PC's original install id, and the app keeps using it."
+            })
+        }),
         new("2.6.3", new DateOnly(2026, 10, 6), "Edit PDF: resizable side panel, a clearly visible text box and margin guides that match the page.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]

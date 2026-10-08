@@ -701,7 +701,7 @@ public sealed class ReviewDialog : Form
     private readonly FieldBox messageBox = new(true, MaxMessage, "Write a few words about your experience (optional)");
     private readonly PrivacyNote note = new()
     {
-        Text = "Sent with the app version and a random install id. Anonymous usage statistics (times opened, time open) are included. Your files and file names are never sent."
+        Text = "Sent with the app version, a random install id and this PC's name and network address. Usage statistics (times opened, time open) are included. Your files and file names are never sent."
     };
     private readonly Txt status = new(DefaultStatus, 8.5f, FontStyle.Regular, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private readonly FlatButton cancel;

@@ -103,8 +103,8 @@ public sealed class AboutDialog : Form
         private const string Blurb =
             "PDF Studio is a fast, offline desktop toolkit for working with PDF pages. Drop in PDFs and pictures, " +
             "rearrange pages visually with drag and drop, then export one clean document — or split, convert, stamp, protect and " +
-            "compress it. Everything runs on your own PC; your files are never uploaded anywhere. The app only reports anonymous usage " +
-            "statistics (how often and how long it is opened) and the reviews you choose to send.";
+            "compress it. Everything runs on your own PC; your files are never uploaded anywhere. The app only reports usage " +
+            "statistics (how often and how long it is opened, with this PC's name and network address) and the reviews you choose to send.";
 
         private static readonly (string Glyph, string Text)[] Chips =
         {

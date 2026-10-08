@@ -5,6 +5,16 @@ All notable changes to PDF Studio are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). Dates are in ISO 8601 format (YYYY-MM-DD).
 The same entries are shown in the app under **Help (F1) › Version history**.
 
+## [2.6.4] - 2026-10-08
+
+_The monitor recognises a PC by its name, so one PC stays one install._
+
+### Added
+- Usage statistics now include the PC's name and its network (LAN) address. The monitor shows both next to every session and install.
+
+### Fixed
+- A PC no longer shows up as a new install when its settings file is lost or reset (reinstall, cleaned profile, another Windows user on the same PC). The monitor matches the PC name, returns the PC's original install id, and the app keeps using it.
+
 ## [2.6.3] - 2026-10-06
 
 _Edit PDF: resizable side panel, a clearly visible text box and margin guides that match the page._

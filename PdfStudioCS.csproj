@@ -23,8 +23,8 @@
     <Description>PDF Studio — merge, reorder, edit, convert and export PDF pages.</Description>
     <Company>Jessie Albert Regualos</Company>
     <Authors>Jessie Albert Regualos</Authors>
-    <Version>2.6.3</Version>
-    <FileVersion>2.6.3.0</FileVersion>
+    <Version>2.6.4</Version>
+    <FileVersion>2.6.4.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
       <Copyright>© Jessie Albert Regualos</Copyright>
   </PropertyGroup>

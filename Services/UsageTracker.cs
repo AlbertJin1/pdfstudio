@@ -6,8 +6,10 @@ namespace PdfStudio.Services;
 
 /// <summary>
 /// Sends anonymous usage statistics (app opened, how long it stays open) and user reviews to the PDF Studio Monitor
-/// web app (PHP) through its ngrok address. No files, file names, PC name or user name are ever sent: only a random
-/// install id, the app version, the Windows version and the open time.
+/// web app (PHP) through its ngrok address. No files, file names or Windows user name are ever sent: only a random
+/// install id, the app version, the Windows version, the open time and the PC's host name and local (LAN) IP address.
+/// The host name lets the monitor recognise the same PC: if the settings file is lost and a new install id is generated,
+/// the monitor answers with the PC's original install id and the app adopts it, so one PC stays one install.
 ///
 /// Reliability: "open" and "close" events that cannot be delivered (offline, server down) are kept in a small queue file and
 /// re-sent the next time the app starts. A "heartbeat" every minute carries the total open time, so even a crash or a
@@ -64,6 +66,67 @@ public static class UsageTracker
             if (id.Length < 16) { id = Guid.NewGuid().ToString("N"); AppSettings.Set("install_id", id); }
             return id;
         }
+    }
+
+    /// <summary>The PC's name (Windows computer name). Used by the monitor to keep one install id per PC.</summary>
+    private static string HostName
+    {
+        get
+        {
+            try
+            {
+                var h = Environment.MachineName?.Trim() ?? "";
+                return h.Length > 64 ? h[..64] : h;
+            }
+            catch { return ""; }
+        }
+    }
+
+    private static string? localIp;
+    private static DateTime localIpAt;
+
+    /// <summary>The PC's own IPv4 address on its active network (the monitor sees the public address by itself). Cached for 10 minutes.</summary>
+    private static string LocalIp
+    {
+        get
+        {
+            if (localIp is not null && DateTime.UtcNow - localIpAt < TimeSpan.FromMinutes(10)) return localIp;
+            var found = "";
+            try
+            {
+                foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (nic.NetworkInterfaceType is System.Net.NetworkInformation.NetworkInterfaceType.Loopback
+                                                or System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
+                    var props = nic.GetIPProperties();
+                    // only an adapter that has a default gateway is really connected to a network (skips virtual adapters)
+                    if (!props.GatewayAddresses.Any(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                                                         && !g.Address.Equals(System.Net.IPAddress.Any))) continue;
+                    var ua = props.UnicastAddresses.FirstOrDefault(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                    if (ua is null) continue;
+                    found = ua.Address.ToString();
+                    break;
+                }
+            }
+            catch { }
+            localIp = found; localIpAt = DateTime.UtcNow;
+            return found;
+        }
+    }
+
+    /// <summary>The monitor answers with the install id it keeps for this PC; adopt it when it differs from ours.</summary>
+    private static void AdoptInstallId(string responseBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            if (!doc.RootElement.TryGetProperty("install_id", out var e) || e.ValueKind != JsonValueKind.String) return;
+            var id = (e.GetString() ?? "").Trim().ToLowerInvariant();
+            if (id.Length is < 16 or > 64 || !id.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return;
+            if (!string.Equals(id, AppSettings.Get("install_id"), StringComparison.Ordinal)) AppSettings.Set("install_id", id);
+        }
+        catch { }
     }
 
     private static HttpClient CreateClient()
@@ -124,6 +187,8 @@ public static class UsageTracker
         ["install_id"] = InstallId,
         ["version"] = AppInfo.Version,
         ["os"] = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+        ["hostname"] = HostName,
+        ["local_ip"] = LocalIp,
         ["started_at"] = startedAt,
         ["seconds"] = (long)Clock.Elapsed.TotalSeconds
     };
@@ -143,6 +208,8 @@ public static class UsageTracker
             ["install_id"] = InstallId,
             ["version"] = AppInfo.Version,
             ["os"] = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+            ["hostname"] = HostName,
+            ["local_ip"] = LocalIp,
             ["rating"] = rating,
             ["name"] = name,
             ["message"] = message
@@ -157,6 +224,7 @@ public static class UsageTracker
             var body = await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
             if (res.IsSuccessStatusCode)
             {
+                AdoptInstallId(body);
                 MarkReviewSubmitted(false);
                 return new ReviewSubmitResult(true, false, "");
             }
@@ -212,6 +280,8 @@ public static class UsageTracker
             using var req = new HttpRequestMessage(HttpMethod.Post, BaseUrl + "/") { Content = content };
             req.Headers.TryAddWithoutValidation("X-Api-Key", ApiKey);
             using var res = await Http.SendAsync(req, cts.Token).ConfigureAwait(false);
+            if (res.IsSuccessStatusCode)
+                AdoptInstallId(await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false));
             // 2xx = stored. 4xx = the server rejected it for good (do not queue it forever). 5xx / network = try again later.
             var ok = res.IsSuccessStatusCode || ((int)res.StatusCode is >= 400 and < 500);
             if (ok && isClose) sentClose = true;
