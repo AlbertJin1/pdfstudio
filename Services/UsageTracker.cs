@@ -23,7 +23,7 @@ namespace PdfStudio.Services;
 public static class UsageTracker
 {
     // ngrok serves HTTPS on the default port (443): ngrok forwards it to the PHP server that listens on :8080 on the host PC.
-    public const string DefaultBaseUrl = "https://paternal-carefully-glucose.ngrok-free.dev/pdfstudio-monitor/api";
+    public const string DefaultBaseUrl = "https://pdfstudio.shares.zrok.io/pdfstudio-monitor/api";
     // Must be the same value as 'api_key' in pdfstudio-monitor/config.php. Change both before you ship.
     private const string DefaultApiKey = "2YN0sJIeJZeGL33wip2xmN2YEvs4TzqV";
 

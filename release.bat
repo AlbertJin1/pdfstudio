@@ -7,7 +7,7 @@ REM          (publish_to_monitor.ps1). NEW version = uploaded; same version but 
 REM          release.bat noupload   builds only.     release.bat -Force   uploads even if the monitor has the identical exe.
 REM          The monitor reads the version out of the exe itself; installed copies offer the update on their next start.
 
-set "MONITOR=https://paternal-carefully-glucose.ngrok-free.dev/pdfstudio-monitor/releases.php"
+set "MONITOR=https://pdfstudio.shares.zrok.io/pdfstudio-monitor/releases.php"
 cd /d "%~dp0"
 
 call "%~dp0build_publish.bat"
