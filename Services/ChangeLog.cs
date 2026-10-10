@@ -21,6 +21,19 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.8.1", new DateOnly(2026, 10, 10), "Steam-style differential updates download changed parts instead of the full application.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "The updater compares content-defined chunks in the installed executable with the new release and downloads only missing parts.",
+                "Update progress shows preparation, changed-part download, local rebuilding and integrity verification."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Every changed part and the reconstructed executable are SHA-256 verified before installation.",
+                "If a differential update is unavailable, damaged or inefficient, PDF Studio falls back to the compressed package and then the full executable."
+            })
+        }),
         new("2.8.0", new DateOnly(2026, 10, 9), "Device-level administrator access control through the PDF Studio Monitor.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]

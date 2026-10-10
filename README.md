@@ -1,6 +1,6 @@
 # PDF Studio — C# / .NET 8 (Windows)
 
-Merge, reorder, edit, split and convert PDFs. See `FEATURES.md` for the full list and `CHANGELOG.md` for the version history (current version: **2.6.1**).
+Merge, reorder, edit, split and convert PDFs. See `FEATURES.md` for the full list and `CHANGELOG.md` for the version history (current version: **2.8.1**).
 
 ## Build
 Install the .NET 8 SDK on the build machine, then run `build_publish.bat`.

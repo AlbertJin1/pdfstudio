@@ -41,12 +41,14 @@ Only `major.minor.build` counts; the 4th number is ignored.
 * A version released here cannot be installed by copies **older than the first build that contains this updater**; those
   must be replaced by hand once.
 * If the monitor is offline when the app starts, nothing is shown (a manual check from About shows the reason).
-* **Smaller transfers (v2.7.0+).** `release.bat` zips the signed exe (deflate, smallest size) and uploads `PdfStudio.zip`, so the upload is
-  about half the size. The monitor checks the zip's SHA-256, unpacks it, checks the exe inside (SHA-256, version, product name) and
-  stores both `release/<version>/PdfStudio.exe` (older copies download this, unchanged) and `PdfStudio.zip` (current copies download
-  this, unpack it to `PdfStudio.exe.new` and verify the exe's own SHA-256 before swapping). If the zip is missing or fails a check,
-  the app silently downloads the full exe. The monitor builds the zip itself for releases uploaded as a plain exe or on the web page
-  (also for older releases, on first request). `publish_to_monitor.ps1 -NoZip` uploads the plain exe. Needs only PHP's zlib extension.
-  Copies older than 2.7.0 still download the full exe once, to get to 2.7.0 or later.
-* Not done: binary delta patches (sending only what changed between two versions). They would shrink updates further but need a
-  patch tool on both sides; the exe bundles the whole .NET runtime, so most bytes are unchanged between releases and it could be worth it later.
+* **Steam-style differential updates (v2.8.1+).** When a new release is published, the monitor creates a content-defined chunk
+  manifest for the executable. The updater scans the installed executable, reuses any matching SHA-256 chunks (even when their
+  offsets moved), and requests only missing chunks. It reconstructs `PdfStudio.exe.new` locally, verifies each downloaded part,
+  then verifies the full executable's size, Windows header and SHA-256 before swapping it into place. The monitor prepares a compact
+  raw-DEFLATE patch stream using PHP's zlib extension; no external patch utility is required. If the patch is not available, fails
+  verification, or is likely less efficient than a compressed full download, the client falls back to the compressed package and
+  finally the plain executable. Existing clients keep working with the original ZIP and EXE endpoints.
+* **Compressed fallback (v2.7.0+).** `release.bat` zips the signed exe and uploads `PdfStudio.zip`, about half the size of the exe.
+  The monitor checks the ZIP's SHA-256, extracts and verifies the executable, and stores both the plain EXE (for older clients) and
+  the ZIP (for current clients). `publish_to_monitor.ps1 -NoZip` uploads the plain EXE. Copies older than 2.7.0 still download the
+  full exe once to get to a build that supports compressed updates.

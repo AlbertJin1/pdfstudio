@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.8.1] - 2026-10-10
+
+_Steam-style differential updates download changed parts instead of redownloading the complete application._
+
+### Added
+- The monitor creates a content-defined chunk manifest for each new PDF Studio release.
+- The updater reuses unchanged chunks from the installed executable and downloads only missing chunks, then reconstructs the new executable locally.
+- Update progress identifies preparation, downloading changed parts, rebuilding, and verification.
+
+### Changed
+- Every differential part and the rebuilt executable are SHA-256 verified before the update can be applied.
+- If the differential manifest or patch is unavailable, damaged, or larger than an efficient transfer, the updater falls back to the compressed package and then the full executable.
+- The monitor continues serving the existing compressed package and plain executable endpoints for backward compatibility.
+
 ## [2.8.0] - 2026-10-09
 
 _Device-level administrator access control through the PDF Studio Monitor._

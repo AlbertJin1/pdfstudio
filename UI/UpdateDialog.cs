@@ -69,7 +69,7 @@ public sealed class UpdateDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(22)));    // "12.3 of 28.9 MB · 42% · 2.1 MB/s · 8 s left"
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
 
-        layout.Controls.Add(new UpdateHero("A new version is available", $"PDF Studio {update.Version} is ready to install  \u00B7  {UpdateService.FormatSize(update.DownloadSize)} download", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
+        layout.Controls.Add(new UpdateHero("A new version is available", DownloadSubtitle(), UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
 
         var parsed = UpdateNotes.Parse(update.Notes);
         var whatsNew = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
@@ -116,21 +116,37 @@ public sealed class UpdateDialog : Form
             {
                 case UpdatePhase.Fallback:
                     clock.Restart(); lastDone = 0;
-                    detail.Text = "The compressed package is not available - downloading the full update…";
+                    detail.Text = p.Message ?? "Switching to the full update…";
                     break;
-                case UpdatePhase.Verifying: detail.Text = "Checking the download…"; break;
-                case UpdatePhase.Unpacking: detail.Text = "Unpacking the update…"; break;
+                case UpdatePhase.PreparingDelta:
+                    detail.Text = p.Message ?? "Comparing the installed app with the new version…";
+                    break;
+                case UpdatePhase.ApplyingDelta:
+                    detail.Text = p.Message ?? "Rebuilding PDF Studio from changed parts…";
+                    break;
+                case UpdatePhase.Verifying:
+                    detail.Text = p.Message ?? "Checking the download…";
+                    break;
+                case UpdatePhase.Unpacking:
+                    detail.Text = p.Message ?? "Unpacking the update…";
+                    break;
                 default:
-                    if (p.Done < lastDone) clock.Restart();                  // a new file started (fallback)
+                    if (p.Done < lastDone) clock.Restart();
                     lastDone = p.Done;
-                    var text = $"Downloading  {UpdateService.FormatSize(p.Done)} of {UpdateService.FormatSize(p.Total)}  \u00B7  {(p.Total > 0 ? 100.0 * p.Done / p.Total : 0):0}%";
+                    var prefix = string.IsNullOrWhiteSpace(p.Message) ? "Downloading" : p.Message.TrimEnd('…', '.', ' ');
+                    var text = p.Total > 0
+                        ? $"{prefix}  {UpdateService.FormatSize(p.Done)} of {UpdateService.FormatSize(p.Total)}  \u00B7  {(100.0 * p.Done / p.Total):0}%"
+                        : $"{prefix}  {UpdateService.FormatSize(p.Done)} received";
                     var secs = clock.Elapsed.TotalSeconds;
                     if (secs >= 1.5 && p.Done > 0)
                     {
-                        var rate = p.Done / secs;                            // bytes per second since the file started
+                        var rate = p.Done / secs;
                         text += $"  \u00B7  {UpdateService.FormatSize((long)rate)}/s";
-                        var left = (p.Total - p.Done) / rate;
-                        if (left >= 1) text += left < 90 ? $"  \u00B7  {Math.Ceiling(left):0} s left" : $"  \u00B7  {Math.Ceiling(left / 60):0} min left";
+                        if (p.Total > p.Done && rate > 0)
+                        {
+                            var left = (p.Total - p.Done) / rate;
+                            if (left >= 1) text += left < 90 ? $"  \u00B7  {Math.Ceiling(left):0} s left" : $"  \u00B7  {Math.Ceiling(left / 60):0} min left";
+                        }
                     }
                     detail.Text = text;
                     break;
@@ -163,9 +179,15 @@ public sealed class UpdateDialog : Form
         if (on) detail.Text = "Starting download…";
     }
 
-    /// <summary>"Download size: 28.9 MB (compressed - the full app is 38.1 MB)".</summary>
+    private string DownloadSubtitle()
+    {
+        if (update.DeltaSupported) return $"PDF Studio {update.Version} is ready to install  ·  smart update reuses unchanged parts";
+        return $"PDF Studio {update.Version} is ready to install  ·  {UpdateService.FormatSize(update.DownloadSize)} download";
+    }
+
     private string DownloadSizeText()
     {
+        if (update.DeltaSupported) return "Smart update: unchanged parts are reused; only changed parts are downloaded.";
         if (update.DownloadSize <= 0) return "";
         var text = "Download size: " + UpdateService.FormatSize(update.DownloadSize);
         if (update.Compressed && update.Size > update.ZipSize) text += $"  (compressed; the app is {UpdateService.FormatSize(update.Size)})";
