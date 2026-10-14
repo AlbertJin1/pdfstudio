@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
+using PdfStudio.Models;
 
 namespace PdfStudio.Services;
 
@@ -13,6 +14,8 @@ public sealed class PdfTextBlock
     public string FontName { get; init; } = "Arial";
     public bool Bold { get; init; }
     public bool Italic { get; init; }
+    /// <summary>Underline-only ranges imported from PDF line paths beneath the glyphs.</summary>
+    public List<TextStyleRun> TextStyles { get; init; } = new();
     public Color Color { get; init; } = Color.Black;
     /// <summary>Pen origin of the first character (x) and the text baseline (y), points, top-left origin.</summary>
     public float OriginX { get; init; }
@@ -74,7 +77,7 @@ public static class PdfiumText
 
     private struct Ch
     {
-        public char C; public float X0, Y0, X1, Y1, OX, OY; public double Size; public string Font; public int Flags, Weight; public Color Fill;
+        public char C; public float X0, Y0, X1, Y1, OX, OY; public double Size; public string Font; public int Flags, Weight; public Color Fill; public bool Underline;
     }
 
     /// <summary>Returns the text lines of one page, or throws if PDFium's text API can't be reached.</summary>
@@ -163,6 +166,9 @@ public static class PdfiumText
                         Font = font, Flags = flags, Weight = FPDFText_GetFontWeight(tp, i), Fill = fill
                     });
                 }
+                // PDF files usually store underlines as separate vector strokes instead of a text font flag.
+                // Recover the underline style while the original page objects are still available.
+                MarkUnderlineCharacters(chars, PdfRules.Read(page, pw, ph));
             }
             finally
             {
@@ -173,6 +179,52 @@ public static class PdfiumText
             }
         }
         return Group(chars);
+    }
+
+    /// <summary>Maps short horizontal underline strokes to glyphs, ignoring connected table/frame borders.</summary>
+    private static void MarkUnderlineCharacters(List<Ch> chars, List<RuleLine> rules)
+    {
+        if (chars.Count == 0 || rules.Count == 0) return;
+        var verticals = rules.Where(r => !r.Horizontal).ToArray();
+        bool IsConnectedBorder(RuleLine line)
+        {
+            // On very complex vector pages, skip this optional classification rather than doing quadratic work.
+            if (rules.Count > 5000) return false;
+            return verticals.Any(v =>
+                (Math.Abs(v.Pos - line.From) <= 1.5 || Math.Abs(v.Pos - line.To) <= 1.5) &&
+                line.Pos >= v.From - 1.5 && line.Pos <= v.To + 1.5);
+        }
+
+        foreach (var line in rules)
+        {
+            if (!line.Horizontal || line.Length < 2.5 || line.Width > 2.5 || IsConnectedBorder(line)) continue;
+            bool NearBaseline(Ch c)
+            {
+                var delta = line.Pos - c.OY;
+                return delta >= -1.5 && delta <= Math.Max(4.0, c.Size * 0.40);
+            }
+            bool Crosses(Ch c) => c.X1 > line.From - 0.5 && c.X0 < line.To + 0.5;
+            var matches = chars.Where(c => c.C != ' ' && Crosses(c) && NearBaseline(c)).ToList();
+            if (matches.Count == 0) continue;
+            var left = matches.Min(c => c.X0);
+            var right = matches.Max(c => c.X1);
+            var overhang = Math.Max(4.0, matches.Average(c => c.Size) * 0.45);
+            if (line.From < left - overhang || line.To > right + overhang || line.Length > right - left + overhang * 2) continue;
+            var covered = matches.Sum(c => Math.Max(0, Math.Min(c.X1, line.To) - Math.Max(c.X0, line.From)));
+            if (covered < Math.Min(2.0, line.Length * 0.35)) continue;
+
+            for (var i = 0; i < chars.Count; i++)
+            {
+                var c = chars[i];
+                if (!NearBaseline(c)) continue;
+                var intersects = c.C == ' '
+                    ? c.OX >= line.From - 0.25 && c.OX <= line.To + 0.25
+                    : Crosses(c);
+                if (!intersects) continue;
+                c.Underline = true;
+                chars[i] = c;
+            }
+        }
     }
 
     /// <summary>Joins characters into lines; a new block starts on a new line or after a wide horizontal gap (columns, tab stops).</summary>
@@ -235,11 +287,24 @@ public static class PdfiumText
         var first = run[0]; var last = run[^1];
         var mapped = MapFont(name, dom.Flags);
         size = FitSizeToAdvance(size, run.Count, sb.ToString(), Math.Max(0f, last.OX - first.OX), mapped, bold, italic);
+        var text = sb.ToString();
+        var styles = new List<TextStyleRun>();
+        for (var i = 0; i < run.Count;)
+        {
+            if (!run[i].Underline) { i++; continue; }
+            var start = i;
+            while (i < run.Count && run[i].Underline) i++;
+            styles.Add(new TextStyleRun
+            {
+                Start = start, Length = i - start, FontName = mapped, FontSize = size,
+                Bold = bold, Italic = italic, Underline = true, ColorHex = PageEditObject.Hex(dom.Fill)
+            });
+        }
         return new PdfTextBlock
         {
             OriginX = first.OX, Baseline = baseline, Advance = Math.Max(0f, last.OX - first.OX),
-            Text = sb.ToString(), Box = new RectangleF(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)),
-            FontSize = size, FontName = mapped, Bold = bold, Italic = italic, Color = dom.Fill
+            Text = text, Box = new RectangleF(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)),
+            FontSize = size, FontName = mapped, Bold = bold, Italic = italic, TextStyles = styles, Color = dom.Fill
         };
     }
 

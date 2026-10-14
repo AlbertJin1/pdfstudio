@@ -29,10 +29,25 @@ public sealed class PageEditObject
     public List<TextStyleRun> TextStyles { get; set; } = new();
 
     /// <summary>
-    /// Horizontal fit (1 = natural). Set when an existing PDF line is converted so the replacement font, which can have
-    /// slightly different advance widths than the PDF's own font, spans exactly the width of the original line.
+    /// Fixed horizontal scale (1 = natural), calibrated once for imported PDF text. Never recalculated from the replacement length.
     /// </summary>
     public double HScale { get; set; } = 1.0;
+
+    /// <summary>
+    /// Available horizontal space to the next field/page edge for a line converted from existing PDF text. This is a
+    /// collision warning/cover limit only; it does not squeeze replacement text to fit.
+    /// Zero means ordinary added text with no original-width constraint.
+    /// </summary>
+    public double EditFitWidthPt { get; set; }
+
+    /// <summary>The maximum horizontal scale permitted for a converted existing line (its original scale).</summary>
+    public double EditFitMaxScale { get; set; } = 1.0;
+
+    /// <summary>
+    /// Preserved baseline offset from the text object's top, measured with its current first-line font metrics.
+    /// Null for newly added text; used to keep the baseline stationary when an existing line's font or size changes.
+    /// </summary>
+    public double? EditBaselineOffsetPt { get; set; }
 
     // image
     public string ImagePath { get; set; } = string.Empty;

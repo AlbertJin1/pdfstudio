@@ -27,6 +27,10 @@ public sealed partial class MainForm : Form
     private FlowLayoutPanel ribbonFlow = null!;
     private Txt tagText = null!;
     private HelpDialog? helpWindow;
+    private UpdateDownloadDialog? updateDownloadWindow;
+    private BackgroundUpdateStatus? lastBackgroundUpdateStatus;
+    private BackgroundUpdateSnapshot? pendingReadyUpdatePrompt;
+    private readonly HashSet<string> promptedUpdateVersions = new(StringComparer.OrdinalIgnoreCase);
     private Txt appName = null!, sizeLabel = null!;
     private FlatButton zoomOutBtn = null!, zoomInBtn = null!;
     private readonly List<FlatButton> toolButtons = new();
@@ -136,7 +140,8 @@ public sealed partial class MainForm : Form
         }
         addBtn = Hb("Add files", "\uE710", BtnKind.Secondary, () => { }, "Add PDFs or pictures (Ctrl+O)", 48);
         addBtn.DropMenu = Menus.Make(
-            ("Add PDFs…\tCtrl+O", () => Fire(AddPdfsFlow())),
+            ("Add PDF / image…", () => Fire(AddFilesFlow())),
+            ("Add PDFs only…", () => Fire(AddPdfsFlow())),
             ("Add images (as pages)…", () => Fire(PickImagesFlow())));
         convertBtn = Hb("Convert", "\uE8AB", BtnKind.Secondary, () => { }, "Convert PDF to Word or images, and images to PDF", 48);
         convertBtn.DropMenu = Menus.Make(
@@ -500,7 +505,7 @@ public sealed partial class MainForm : Form
             var b = new FlatButton { Text = text, Glyph = glyph, Kind = k, Width = w, Height = 40, Margin = new Padding(0) };
             b.Click += (_, _) => a(); return b;
         }
-        buttons.Controls.Add(emptyAddPdfBtn = B("Add PDFs", "\uE710", BtnKind.Primary, 124, () => Fire(AddPdfsFlow())));
+        buttons.Controls.Add(emptyAddPdfBtn = B("Add PDF / image", "\uE710", BtnKind.Primary, 156, () => Fire(AddFilesFlow())));
         buttons.Controls.Add(emptyAddImageBtn = B("Add images", "\uE91B", BtnKind.Secondary, 132, () => Fire(PickImagesFlow())));
         buttons.Controls.Add(B("Help guide", "\uE897", BtnKind.Ghost, 124, () => ShowHelp()));
         var hint = new Txt("Tip: you can also drop files anywhere on this window.  Press F1 for the full guide.", 9f, FontStyle.Regular, true)
@@ -556,7 +561,7 @@ public sealed partial class MainForm : Form
         grid.StateChanged += (_, _) => { UpdateUi(); ShowPreview(false); };
         grid.ReorderRequested += OnReorder;
         grid.FilesDropped += (files, at) => { if (!accessDenied) Fire(AddFilesAsync(files, at)); };
-        grid.AddPdfRequested += () => { if (!accessDenied) Fire(AddPdfsFlow()); };
+        grid.AddFilesRequested += () => { if (!accessDenied) Fire(AddFilesFlow()); };
         grid.QuickRotate += p => { if (!accessDenied) Edit(() => p.Rotation = PdfService.Norm(p.Rotation + 90)); };
         grid.QuickDelete += p => { if (!accessDenied) Edit(() => pages.Remove(p)); };
         grid.PageOpened += p => { grid.SelectOnly(pages.IndexOf(p)); };
@@ -590,6 +595,21 @@ public sealed partial class MainForm : Form
             AccessControlService.StateChanged += OnAccessStateChanged;
             AccessControlService.Start();
             UsageTracker.Start();
+            BackgroundUpdateService.StateChanged -= OnBackgroundUpdateChanged;
+            BackgroundUpdateService.StateChanged += OnBackgroundUpdateChanged;
+            var restoredUpdate = BackgroundUpdateService.Current;
+            if (restoredUpdate.Status == BackgroundUpdateStatus.Ready)
+            {
+                // Let the splash finish closing and the main window become visible before a restored-update prompt appears.
+                var restorePromptTimer = new System.Windows.Forms.Timer { Interval = 1400 };
+                restorePromptTimer.Tick += (_, _) =>
+                {
+                    restorePromptTimer.Stop(); restorePromptTimer.Dispose();
+                    if (!IsDisposed) HandleBackgroundUpdateState(restoredUpdate);
+                };
+                restorePromptTimer.Start();
+            }
+            else HandleBackgroundUpdateState(restoredUpdate);
             ScheduleRandomReviewPrompt();
             if (UpdateService.AutoCheck)
             {
@@ -619,6 +639,9 @@ public sealed partial class MainForm : Form
             AppSettings.SetBool("autofit", grid.AutoFit);
             AppSettings.SetBool("preview", previewPref);
             UsageTracker.Stop();
+            BackgroundUpdateService.StateChanged -= OnBackgroundUpdateChanged;
+            if (updateDownloadWindow is { IsDisposed: false }) updateDownloadWindow.ClosePermanently();
+            updateDownloadWindow = null;
             AccessControlService.StateChanged -= OnAccessStateChanged;
             AccessControlService.Stop();
             try { reviewPromptTimer?.Stop(); reviewPromptTimer?.Dispose(); } catch { }
@@ -787,7 +810,7 @@ public sealed partial class MainForm : Form
         else if (e.Control && e.KeyCode == Keys.T) Do(AddText);
         else if (e.Control && e.KeyCode == Keys.E) Do(EditPdf);
         else if (e.Control && e.KeyCode == Keys.P) Do(() => Fire(OpenInViewerAsync()));
-        else if (e.Control && e.KeyCode == Keys.O) Do(() => Fire(AddPdfsFlow()));
+        else if (e.Control && e.KeyCode == Keys.O) Do(() => Fire(AddFilesFlow()));
         else if (e.Control && e.KeyCode == Keys.S) Do(() => Fire(ExportAsync(false)));
         else if (e.Control && e.KeyCode == Keys.Left) Do(() => Rotate(-90));
         else if (e.Control && e.KeyCode == Keys.Right) Do(() => Rotate(90));

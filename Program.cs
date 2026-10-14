@@ -13,7 +13,8 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        UpdateService.CleanupLeftovers();   // removes PdfStudio.exe.old left behind by the previous update
+        UpdateService.CleanupLeftovers();   // removes old updater leftovers without discarding a postponed update
+        BackgroundUpdateService.Initialize(); // restore a verified update, if the user chose Update later
         ApplicationConfiguration.Initialize();
         Theme.Init();
         Theme.SetDark(AppSettings.LoadDark());

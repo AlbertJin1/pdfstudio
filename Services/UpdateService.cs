@@ -100,6 +100,8 @@ public static class UpdateService
 
     private static string? ExePath => Environment.ProcessPath;
     private static string NewPath => ExePath + ".new";
+    /// <summary>Verified replacement executable staged beside the running executable.</summary>
+    public static string StagedPath => NewPath;
     private static string OldPath => ExePath + ".old";
     private static string ZipTempPath => ExePath + ".new.zip";
     private static string DeltaTempPath => ExePath + ".new.delta";
@@ -148,14 +150,16 @@ public static class UpdateService
     public static void CleanupLeftovers()
     {
         if (string.IsNullOrEmpty(ExePath)) return;
-        var old = OldPath; var nw = NewPath; var zip = ZipTempPath; var delta = DeltaTempPath;
+        var old = OldPath; var zip = ZipTempPath; var delta = DeltaTempPath;
         _ = Task.Run(async () =>
         {
             for (var i = 0; i < 10; i++)
             {
                 try
                 {
-                    TryDelete(old); TryDelete(nw); TryDelete(zip); TryDelete(delta);
+                    // Keep .new intact: a completed update may have been deliberately postponed.
+                    // BackgroundUpdateService removes unmarked/incomplete .new files during startup.
+                    TryDelete(old); TryDelete(zip); TryDelete(delta);
                     foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), "PdfStudioDelta-*"))
                     {
                         try { if (Directory.GetCreationTimeUtc(dir) < DateTime.UtcNow.AddDays(-1)) Directory.Delete(dir, true); } catch { }
@@ -690,15 +694,47 @@ public static class UpdateService
 
     // ───────────────────────── 3. apply ─────────────────────────
 
-    /// <summary>Swaps the verified executable into place and restarts the app. Caller closes after this succeeds.</summary>
-    public static void ApplyAndRestart(string newFile)
+    /// <summary>Revalidates the staged executable, swaps it into place and restarts only after the user confirms.</summary>
+    public static void ApplyAndRestart(string newFile, UpdateInfo update)
     {
+        if (!File.Exists(newFile))
+        {
+            BackgroundUpdateService.DiscardInvalidStagedUpdate(newFile, update.Version);
+            throw new FileNotFoundException("The downloaded update is no longer available. Check for updates to download it again.", newFile);
+        }
+        var info = new FileInfo(newFile);
+        if (update.Size > 0 && info.Length != update.Size)
+        {
+            BackgroundUpdateService.DiscardInvalidStagedUpdate(newFile, update.Version);
+            throw new IOException("The staged update's size changed after download. The invalid file was removed; download it again before installing.");
+        }
+        using (var stream = File.OpenRead(newFile))
+        {
+            var header = new byte[2];
+            if (stream.Read(header, 0, 2) != 2 || header[0] != (byte)'M' || header[1] != (byte)'Z')
+            {
+                BackgroundUpdateService.DiscardInvalidStagedUpdate(newFile, update.Version);
+                throw new IOException("The staged update is not a valid Windows executable. The invalid file was removed; download it again before installing.");
+            }
+            if (!string.IsNullOrWhiteSpace(update.Sha256))
+            {
+                stream.Position = 0;
+                var actual = Convert.ToHexString(SHA256.HashData(stream));
+                if (!string.Equals(actual, update.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    BackgroundUpdateService.DiscardInvalidStagedUpdate(newFile, update.Version);
+                    throw new IOException("The staged update failed its final SHA-256 integrity check. The invalid file was removed; download it again before installing.");
+                }
+            }
+        }
+
         var exe = ExePath ?? throw new InvalidOperationException("Cannot locate the running program.");
         var old = OldPath;
         try { if (File.Exists(old)) File.Delete(old); } catch { }
         File.Move(exe, old);
         try { File.Move(newFile, exe); }
         catch { try { File.Move(old, exe); } catch { } throw; }
+        BackgroundUpdateService.ClearPendingMarker();
         Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe)! });
     }
 }

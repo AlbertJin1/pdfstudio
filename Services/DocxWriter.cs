@@ -15,6 +15,8 @@ public sealed class DocxRun
     public double SizePt { get; init; } = 11;
     public bool Bold { get; init; }
     public bool Italic { get; init; }
+    /// <summary>Semantic Word underline formatting, not a background line/shape.</summary>
+    public bool Underline { get; init; }
     /// <summary>0xRRGGBB</summary>
     public int Rgb { get; init; }
     /// <summary>Extra space after every character of this run, in points (can be negative). Null = use the line's value.</summary>
@@ -39,23 +41,35 @@ public sealed class DocxTextLine
     public List<DocxRun> Runs { get; } = new();
 }
 
+public sealed class DocxPicture
+{
+    /// <summary>Top-left page coordinates and size, in PDF points.</summary>
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public byte[] Data { get; init; } = Array.Empty<byte>();
+    public string Ext { get; init; } = "png";
+}
+
 public sealed class DocxPage
 {
     public double WidthPt { get; init; }
     public double HeightPt { get; init; }
-    /// <summary>Picture of everything that is not text (lines, shapes, photos), shown behind the text. png or jpg.</summary>
+    /// <summary>Optional flattened page artwork. Disabled by default because it is a page-sized draggable picture.</summary>
     public byte[]? Background { get; set; }
     public string BackgroundExt { get; set; } = "png";
+    /// <summary>Individual image regions anchored at their original page positions; never page-sized by default.</summary>
+    public List<DocxPicture> Pictures { get; } = new();
     public List<DocxTextLine> Lines { get; } = new();
     /// <summary>Real Word tables rebuilt from the page's ruling lines; their text is inside the cells, not in text boxes.</summary>
     public List<DocxTable> Tables { get; } = new();
 }
 
 /// <summary>
-/// Minimal, dependency-free .docx (WordprocessingML) writer. Every PDF page becomes its own zero-margin section of
-/// exactly the PDF's size; tables are real Word tables (floating, pinned to the page position) with their text in the
-/// cells, loose text lines are floating, borderless text boxes anchored to the page, and the page's graphics are a
-/// full-page picture behind them. That is what keeps the layout identical to the PDF.
+/// Minimal, dependency-free .docx (WordprocessingML) writer. Every PDF page becomes its own zero-margin section.
+/// Tables are real Word tables, loose text is emitted as ordinary WordprocessingML paragraphs/runs (not text boxes),
+/// and genuine image objects can be preserved as separate, bounded pictures. A flattened full-page picture is opt-in only.
 /// </summary>
 public sealed class DocxWriter : IDisposable
 {
@@ -70,11 +84,10 @@ public sealed class DocxWriter : IDisposable
     private readonly Dictionary<string, PdfFontInfo> fontTable = new(StringComparer.OrdinalIgnoreCase);
     private int shapeId = 1;
     private int pageCount;
-    private int relativeHeight = 251658240;
     private double lastW = 612, lastH = 792;
     private bool finished;
-    // The page being built is held back until the next page arrives: every page except the last ends with a section break.
-    private string? pendingHead, pendingSect;
+    // The page being built is held back until the next page arrives: each non-final page ends with a section break.
+    private string? pendingSect;
     private readonly StringBuilder pendingTail = new();
     private readonly StringBuilder pendingTables = new();
 
@@ -150,13 +163,13 @@ public sealed class DocxWriter : IDisposable
         return sb.ToString();
     }
 
-    /// <summary>Adds one PDF page. Pages are written immediately, so memory stays small for long documents.</summary>
+    /// <summary>Adds one PDF page. Loose text is ordinary editable Word text, never a floating text box.</summary>
     public void AddPage(DocxPage page)
     {
         if (finished) throw new InvalidOperationException("Document already finished.");
         pageCount++;
 
-        // Word cannot make a page larger than 22 in; shrink the whole page proportionally if a PDF is bigger (posters, plans).
+        // Word cannot make a page larger than 22 in; shrink the whole page proportionally if a PDF is bigger.
         var k = Math.Min(1.0, MaxPageSidePt / Math.Max(page.WidthPt, page.HeightPt));
         double pw = Math.Max(36, page.WidthPt * k), ph = Math.Max(36, page.HeightPt * k);
         lastW = pw; lastH = ph;
@@ -165,37 +178,64 @@ public sealed class DocxWriter : IDisposable
         pendingTables.Clear();
         foreach (var table in page.Tables)
             if (table.Cells.Count > 0) AppendTable(pendingTables, table, k);
-        pendingHead = "<w:p><w:pPr><w:keepNext w:val=\"0\"/><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/>";
         pendingSect = SectPr(pw, ph, withBreak: true);
-        var sb = pendingTail;
-        sb.Clear();
-        sb.Append("</w:pPr><w:r><w:rPr><w:sz w:val=\"2\"/><w:szCs w:val=\"2\"/></w:rPr>");
+        pendingTail.Clear();
 
+        // A flattened full-page picture is supported only as an explicit opt-in. Normal conversion keeps text as
+        // Word paragraphs and uses separate, page-positioned pictures for bounded image objects.
         if (page.Background is { Length: > 0 })
         {
             var ext = page.BackgroundExt == "jpg" ? "jpg" : "png";
             var name = $"page{pageCount}.{ext}";
             var e = zip.CreateEntry("word/media/" + name, CompressionLevel.NoCompression);
-            using (var s = e.Open()) s.Write(page.Background, 0, page.Background.Length);
+            using (var stream = e.Open()) stream.Write(page.Background, 0, page.Background.Length);
             var rid = "rIdImg" + pageCount;
             media.Add((rid, "media/" + name));
-            AppendPicture(sb, rid, pw, ph, pageCount);
+            pendingTail.Append("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/><w:rPr><w:sz w:val=\"2\"/><w:szCs w:val=\"2\"/></w:rPr></w:pPr><w:r>");
+            AppendPicture(pendingTail, rid, 0, 0, pw, ph, true, $"Page {pageCount} full-page artwork");
+            pendingTail.Append("</w:r></w:p>");
         }
 
-        foreach (var line in page.Lines)
-            if (line.Runs.Count > 0) AppendTextBox(sb, line, k);
+        if (page.Pictures.Count > 0)
+        {
+            pendingTail.Append("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/><w:rPr><w:sz w:val=\"2\"/><w:szCs w:val=\"2\"/></w:rPr></w:pPr>");
+            var pictureIndex = 0;
+            foreach (var picture in page.Pictures)
+            {
+                if (picture.Data.Length == 0 || picture.Width <= 0 || picture.Height <= 0) continue;
+                pictureIndex++;
+                var ext = picture.Ext.Equals("jpg", StringComparison.OrdinalIgnoreCase) ? "jpg" : "png";
+                var name = $"page{pageCount}-image{pictureIndex}.{ext}";
+                var e = zip.CreateEntry("word/media/" + name, CompressionLevel.NoCompression);
+                using (var stream = e.Open()) stream.Write(picture.Data, 0, picture.Data.Length);
+                var rid = $"rIdPic{pageCount}_{pictureIndex}";
+                media.Add((rid, "media/" + name));
+                pendingTail.Append("<w:r>");
+                AppendPicture(pendingTail, rid, picture.X * k, picture.Y * k,
+                    picture.Width * k, picture.Height * k, true, $"Page {pageCount} image {pictureIndex}");
+                pendingTail.Append("</w:r>");
+            }
+            pendingTail.Append("</w:p>");
+        }
 
-        sb.Append("</w:r></w:p>");
+        AppendFlowParagraphs(pendingTail, page.Lines, k);
     }
 
     private void FlushPending(bool withBreak)
     {
-        if (pendingHead is null) return;
+        if (pendingSect is null && pendingTail.Length == 0 && pendingTables.Length == 0) return;
         body.Append(pendingTables);
-        body.Append(pendingHead);
-        if (withBreak) body.Append(pendingSect);
         body.Append(pendingTail);
-        pendingHead = null; pendingSect = null; pendingTail.Clear(); pendingTables.Clear();
+        if (withBreak && pendingSect is not null)
+        {
+            // Section properties belong to the final paragraph of the section, not the first/background paragraph.
+            // A one-point empty paragraph is used so ordinary text above it remains in the section with this page size.
+            body.Append("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/>")
+                .Append(pendingSect).Append("</w:pPr></w:p>");
+        }
+        pendingSect = null;
+        pendingTail.Clear();
+        pendingTables.Clear();
     }
 
     private static string SectPr(double wPt, double hPt, bool withBreak)
@@ -219,46 +259,182 @@ public sealed class DocxWriter : IDisposable
           .Append("<wp:docPr id=\"").Append(id).Append("\" name=\"").Append(name).Append("\"/><wp:cNvGraphicFramePr/>");
     }
 
-    private void AppendPicture(StringBuilder sb, string rid, double pw, double ph, int pageNo)
+    private void AppendPicture(StringBuilder sb, string rid, double x, double y, double width, double height, bool behind, string name)
     {
         var id = shapeId++;
-        AnchorOpen(sb, 0, 0, pw, ph, behind: true, zOrder: 1, id, $"Page {pageNo} graphics");
+        AnchorOpen(sb, x, y, width, height, behind, id, id, name);
         sb.Append("<a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">")
           .Append("<a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">")
           .Append("<pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">")
-          .Append("<pic:nvPicPr><pic:cNvPr id=\"").Append(id).Append("\" name=\"graphics").Append(pageNo).Append("\"/><pic:cNvPicPr/></pic:nvPicPr>")
+          .Append("<pic:nvPicPr><pic:cNvPr id=\"").Append(id).Append("\" name=\"").Append(Esc(name)).Append("\"/><pic:cNvPicPr/></pic:nvPicPr>")
           .Append("<pic:blipFill><a:blip r:embed=\"").Append(rid).Append("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>")
-          .Append("<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"").Append(ToEmu(pw)).Append("\" cy=\"").Append(ToEmu(ph)).Append("\"/></a:xfrm>")
-          .Append("<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing>");
+          .Append("<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"").Append(ToEmu(width)).Append("\" cy=\"").Append(ToEmu(height)).Append("\"/></a:xfrm>")
+          .Append("<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>");
     }
 
-    private void AppendTextBox(StringBuilder sb, DocxTextLine line, double k)
+    private sealed class FlowRow
     {
-        var id = shapeId++;
-        double w = Math.Max(2, line.Width * k), h = Math.Max(2, line.Height * k);
-        // Word itself writes text boxes inside mc:AlternateContent; do the same so every Word version accepts the file.
-        sb.Append("<mc:AlternateContent><mc:Choice Requires=\"wps\">");
-        AnchorOpen(sb, line.X * k, line.Top * k, w, h, behind: false, zOrder: relativeHeight++, id, "Text " + id);
-        sb.Append("<a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">")
-          .Append("<a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\">")
-          .Append("<wps:wsp xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:cNvSpPr txBox=\"1\"/>")
-          .Append("<wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"").Append(ToEmu(w)).Append("\" cy=\"").Append(ToEmu(h)).Append("\"/></a:xfrm>")
-          .Append("<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr>")
-          .Append("<wps:txbx><w:txbxContent><w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/><w:jc w:val=\"left\"/></w:pPr>");
-
-        AppendRuns(sb, line, k);
-
-        sb.Append("</w:p></w:txbxContent></wps:txbx>")
-          .Append("<wps:bodyPr rot=\"0\" vert=\"horz\" wrap=\"none\" lIns=\"0\" tIns=\"0\" rIns=\"0\" bIns=\"0\" anchor=\"t\" anchorCtr=\"0\"><a:noAutofit/></wps:bodyPr>")
-          .Append("</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback/></mc:AlternateContent>");
+        public List<DocxTextLine> Segments { get; } = new();
+        public double Baseline => Segments.Count == 0 ? 0 : Segments.Average(l => l.Baseline);
+        public double Top => Segments.Count == 0 ? 0 : Segments.Min(l => l.Top);
+        public double MaxSize => Math.Max(4, Segments.Count == 0 ? 11 : Segments.Max(l => l.MaxSize));
+        public string Text => string.Join("\t", Segments.Select(DocxWriter.LineText));
     }
 
-    private void AppendRuns(StringBuilder sb, DocxTextLine line, double k)
+    private sealed class FlowParagraph
+    {
+        public List<FlowRow> Rows { get; } = new();
+        public double Top => Rows.Count == 0 ? 0 : Rows[0].Top;
+        public double MaxSize => Math.Max(4, Rows.Count == 0 ? 11 : Rows.Max(r => r.MaxSize));
+        public bool IsBullet => Rows.Count > 0 && DocxWriter.IsBulletText(Rows[0].Text);
+    }
+
+    private static string LineText(DocxTextLine line) => string.Concat(line.Runs.Select(r => r.Text));
+
+    private static List<FlowRow> BuildFlowRows(IEnumerable<DocxTextLine> lines)
+    {
+        var rows = new List<FlowRow>();
+        foreach (var line in lines.Where(l => l.Runs.Count > 0 && LineText(l).Length > 0)
+                                  .OrderBy(l => l.Baseline).ThenBy(l => l.X))
+        {
+            FlowRow? row = null;
+            if (rows.Count > 0)
+            {
+                var candidate = rows[^1];
+                if (Math.Abs(candidate.Baseline - line.Baseline) < 0.3 * Math.Max(candidate.MaxSize, line.MaxSize))
+                    row = candidate;
+            }
+            if (row is null) { row = new FlowRow(); rows.Add(row); }
+            row.Segments.Add(line);
+        }
+        foreach (var row in rows) row.Segments.Sort((a, b) => a.X.CompareTo(b.X));
+        return rows;
+    }
+
+    private static bool IsBulletText(string text)
+    {
+        var t = text.TrimStart();
+        return t.StartsWith("•", StringComparison.Ordinal) || t.StartsWith("▪", StringComparison.Ordinal) ||
+               t.StartsWith("◦", StringComparison.Ordinal) || t.StartsWith("‣", StringComparison.Ordinal) ||
+               t.StartsWith("□", StringComparison.Ordinal) || t.StartsWith("☐", StringComparison.Ordinal) ||
+               t.StartsWith("- ", StringComparison.Ordinal) || t.StartsWith("– ", StringComparison.Ordinal) ||
+               t.StartsWith("— ", StringComparison.Ordinal) || t.StartsWith("* ", StringComparison.Ordinal);
+    }
+
+    private static bool IsHeading(FlowRow row)
+    {
+        var t = row.Text.Replace("\t", " ").Trim();
+        if (t.Length == 0 || t.Length > 72 || t.Contains('.') || t.Contains('?') || t.Contains('!')) return false;
+        var letters = t.Where(char.IsLetter).ToArray();
+        return letters.Length >= 3 && letters.Count(char.IsUpper) >= Math.Ceiling(letters.Length * 0.82);
+    }
+
+    private static bool CanContinueParagraph(FlowParagraph paragraph, FlowRow next)
+    {
+        if (paragraph.Rows.Count == 0) return false;
+        var prev = paragraph.Rows[^1];
+        var size = Math.Max(prev.MaxSize, next.MaxSize);
+        var lineHeight = Math.Max(4, size * 1.25);
+        var verticalGap = next.Baseline - prev.Baseline;
+        if (verticalGap < 0 || verticalGap > lineHeight * 1.65) return false;
+        if (IsBulletText(next.Text) || IsHeading(next)) return false;
+        if (paragraph.Rows.Count == 1 && IsHeading(paragraph.Rows[0])) return false;
+
+        var firstX = paragraph.Rows[0].Segments[0].X;
+        var currentX = next.Segments[0].X;
+        if (paragraph.IsBullet)
+        {
+            // Bulleted paragraphs commonly use a hanging indent: wrapped lines start just to the right of the bullet.
+            return currentX >= firstX - 2 && currentX <= firstX + Math.Max(28, paragraph.MaxSize * 4.2);
+        }
+        var tolerance = Math.Max(16, size * 2.2);
+        return Math.Abs(currentX - firstX) <= tolerance ||
+               Math.Abs(currentX - prev.Segments[0].X) <= tolerance;
+    }
+
+    private static List<FlowParagraph> BuildFlowParagraphs(IEnumerable<DocxTextLine> lines)
+    {
+        var paragraphs = new List<FlowParagraph>();
+        foreach (var row in BuildFlowRows(lines))
+        {
+            if (paragraphs.Count == 0 || !CanContinueParagraph(paragraphs[^1], row))
+                paragraphs.Add(new FlowParagraph());
+            paragraphs[^1].Rows.Add(row);
+        }
+        return paragraphs;
+    }
+
+    private static (double Left, double FirstLine, double Hanging) FlowIndent(FlowParagraph paragraph)
+    {
+        var firstX = Math.Max(0, paragraph.Rows[0].Segments[0].X);
+        if (paragraph.Rows.Count < 2) return (firstX, 0, 0);
+        var nextXs = paragraph.Rows.Skip(1).Select(r => Math.Max(0, r.Segments[0].X)).OrderBy(x => x).ToArray();
+        if (nextXs.Length == 0) return (firstX, 0, 0);
+        var continuationX = nextXs[nextXs.Length / 2];
+        if (Math.Abs(continuationX - firstX) < 2) return (firstX, 0, 0);
+        // Word's left indent is used for wrapped lines; firstLine/hanging reconstructs the actual first-line start.
+        return continuationX <= firstX
+            ? (continuationX, firstX - continuationX, 0)
+            : (continuationX, 0, continuationX - firstX);
+    }
+
+    private void AppendFlowParagraphs(StringBuilder sb, IReadOnlyList<DocxTextLine> lines, double k)
+    {
+        var paragraphs = BuildFlowParagraphs(lines);
+        var cursorY = 1.0; // the page-artwork anchor paragraph above is one point tall at most
+        foreach (var paragraph in paragraphs)
+        {
+            var indent = FlowIndent(paragraph);
+            var before = Math.Max(0, paragraph.Top - cursorY);
+            var lineHeight = Math.Max(4, paragraph.MaxSize * 1.25);
+            var first = paragraph.Rows[0];
+            var tabs = paragraph.Rows.SelectMany(r => r.Segments.Skip(1))
+                .Select(l => (int)Math.Round(Math.Max(1, l.X * k) * 20))
+                .Where(t => t > 0).Distinct().OrderBy(t => t).ToArray();
+
+            sb.Append("<w:p><w:pPr><w:widowControl/>");
+            if (tabs.Length > 0)
+            {
+                sb.Append("<w:tabs>");
+                foreach (var tab in tabs) sb.Append("<w:tab w:val=\"left\" w:pos=\"").Append(tab).Append("\"/>");
+                sb.Append("</w:tabs>");
+            }
+            sb.Append("<w:spacing w:before=\"").Append(Tw(before * k))
+              .Append("\" w:after=\"0\" w:line=\"").Append(Math.Max(20, Tw(lineHeight * k)))
+              .Append("\" w:lineRule=\"exact\"/><w:ind w:left=\"").Append(Tw(indent.Left * k)).Append('"');
+            if (indent.FirstLine > 0.5) sb.Append(" w:firstLine=\"").Append(Tw(indent.FirstLine * k)).Append('"');
+            if (indent.Hanging > 0.5) sb.Append(" w:hanging=\"").Append(Tw(indent.Hanging * k)).Append('"');
+            sb.Append("/></w:pPr>");
+
+            for (var rowIndex = 0; rowIndex < paragraph.Rows.Count; rowIndex++)
+            {
+                var row = paragraph.Rows[rowIndex];
+                if (rowIndex > 0)
+                {
+                    var prevText = paragraph.Rows[rowIndex - 1].Text.TrimEnd();
+                    var nextText = row.Text.TrimStart();
+                    var last = prevText.Length > 0 ? prevText[^1] : '\0';
+                    var next = nextText.Length > 0 ? nextText[0] : '\0';
+                    var needsSpace = last is not ('-' or '–' or '—') && next is not ('.' or ',' or ';' or ':' or ')' or ']' or '?');
+                    if (needsSpace) sb.Append("<w:r><w:t xml:space=\"preserve\"> </w:t></w:r>");
+                }
+                for (var segmentIndex = 0; segmentIndex < row.Segments.Count; segmentIndex++)
+                {
+                    if (segmentIndex > 0) sb.Append("<w:r><w:tab/></w:r>");
+                    AppendInlineRuns(sb, row.Segments[segmentIndex], k);
+                }
+            }
+            sb.Append("</w:p>");
+            cursorY = Math.Max(cursorY, paragraph.Top) + paragraph.Rows.Count * lineHeight;
+        }
+    }
+
+    /// <summary>Writes ordinary inline Word runs. Letter-spacing corrections used for pixel-perfect text boxes are intentionally omitted so Word can reflow text naturally.</summary>
+    private void AppendInlineRuns(StringBuilder sb, DocxTextLine line, double k)
     {
         foreach (var r in line.Runs)
         {
             if (r.Text.Length == 0) continue;
-            var spacingTwips = (int)Math.Round(Math.Clamp((r.SpacingPt ?? line.SpacingPt) * k, -20, 60) * 20);
             var half = Math.Max(2, (int)Math.Round(r.SizePt * k * 2));
             RegisterFont(r);
             var font = Esc(r.Font);
@@ -266,9 +442,9 @@ public sealed class DocxWriter : IDisposable
               .Append("\" w:eastAsia=\"").Append(font).Append("\" w:cs=\"").Append(font).Append("\"/>");
             if (r.Bold) sb.Append("<w:b/><w:bCs/>");
             if (r.Italic) sb.Append("<w:i/><w:iCs/>");
-            sb.Append("<w:color w:val=\"").Append((r.Rgb & 0xFFFFFF).ToString("X6")).Append("\"/>");
-            if (spacingTwips != 0) sb.Append("<w:spacing w:val=\"").Append(spacingTwips).Append("\"/>");
-            sb.Append("<w:sz w:val=\"").Append(half).Append("\"/><w:szCs w:val=\"").Append(half).Append("\"/></w:rPr>")
+            if (r.Underline) sb.Append("<w:u w:val=\"single\"/>");
+            sb.Append("<w:color w:val=\"").Append((r.Rgb & 0xFFFFFF).ToString("X6")).Append("\"/>")
+              .Append("<w:sz w:val=\"").Append(half).Append("\"/><w:szCs w:val=\"").Append(half).Append("\"/></w:rPr>")
               .Append("<w:t xml:space=\"preserve\">").Append(Esc(r.Text)).Append("</w:t></w:r>");
         }
     }
@@ -363,7 +539,7 @@ public sealed class DocxWriter : IDisposable
         for (var s = 0; s < p.Segs.Count; s++)
         {
             if (s > 0) sb.Append("<w:r><w:tab/></w:r>");
-            AppendRuns(sb, p.Segs[s], k);
+            AppendInlineRuns(sb, p.Segs[s], k);
         }
         sb.Append("</w:p>");
     }
@@ -412,12 +588,10 @@ public sealed class DocxWriter : IDisposable
         var xml = new StringBuilder(body.Length + 1024);
         xml.Append(Header)
            .Append("<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" ")
-           .Append("xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" ")
            .Append("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" ")
            .Append("xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" ")
            .Append("xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" ")
-           .Append("xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" ")
-           .Append("xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><w:body>")
+           .Append("xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>")
            .Append(body)
            .Append(SectPr(lastW, lastH, withBreak: false))
            .Append("</w:body></w:document>");

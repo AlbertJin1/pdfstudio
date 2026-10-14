@@ -21,6 +21,144 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.8.13", new DateOnly(2026, 10, 15), "Resolve ambiguous ImageFormat references in PDF-to-Word raster processing.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Qualified PNG/JPEG image encoders as System.Drawing.Imaging.ImageFormat through a DrawingImageFormat alias, resolving CS0104 conflicts with TesseractOCR.Enums.ImageFormat.",
+                "Kept raster crop encoding and OCR image processing behavior unchanged; only the intended GDI+ image format enum is used for System.Drawing image operations."
+            })
+        }),
+        new("2.8.12", new DateOnly(2026, 10, 15), "Fix duplicate inline-edit cancellation and restore undo/redo history cleanly when Cancel is pressed.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Removed the stale duplicate CancelInlineEdit method from the EditorForm layout partial, resolving compiler error CS0111.",
+                "Cancelling an inline edit restores the original page objects and the undo/redo history that existed before the edit session, including when text was formatted or dragged.",
+                "Removed obsolete text/position fields used only by the duplicate cancellation path."
+            }),
+        }),
+        new("2.8.11", new DateOnly(2026, 10, 15), "Keep raster text editable, preserve Edit PDF text scale and tidy the Add files menu.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF-to-Word upscales raster text panels before OCR, accepts more legible low-resolution lines and maps their coordinates back to the original PDF page.",
+                "Text-shaped image regions are rejected as draggable pictures even when antialiasing makes them look photographic; when OCR cannot recover the panel, it is omitted with a warning instead of flattened into a picture.",
+                "Edit PDF applies the calibrated source horizontal scale across the full supported range to keep live text and the saved overlay aligned when PDF fonts have different installed substitutes.",
+                "The Add PDF / image menu caption no longer collides with a rendered Ctrl+O hint; the keyboard shortcut continues to work."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Editable-first PDF-to-Word prioritizes flowing, searchable text. OCR results may need proofreading; small bounded photos/logos may remain individual images."
+            })
+        }),
+        new("2.8.10", new DateOnly(2026, 10, 14), "Recover raster text inside nested PDF forms and keep Edit PDF text scaling stable while typing.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF-to-Word finds images nested in Form XObjects and uses a page-level OCR fallback after stripping vector text, so embedded paragraphs are recovered as ordinary Word text where OCR can read them.",
+                "Text-like image regions are suppressed from the Word picture list after OCR recovery. In editable-first mode, uncertain text panels and page-sized scans are omitted rather than exported as draggable pictures; only small bounded photo/logo candidates may remain pictures.",
+                "Edit PDF reapplies the calibrated character scale after each edit keystroke and formatting change, keeping new characters consistent with the live editor and saved PDF overlay.",
+                "The Add PDF / image menu label and shortcut spacing are improved, and cancelling a newly added text object no longer attempts to remove it twice."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Editable-first Word conversion favors flowing, searchable, editable paragraphs over preserving every raster decoration. Low-confidence OCR needs manual review, especially for non-English or highly stylized text.",
+                "Edit PDF never silently squeezes longer replacements; it keeps the source scale and baseline and warns if text may overlap another field."
+            })
+        }),
+        new("2.8.9", new DateOnly(2026, 10, 14), "Recognize text inside image panels and keep Edit PDF text geometrically stable.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF-to-Word OCR now examines meaningful image regions before classifying them as photos, and converts paragraph-like raster text to ordinary Word paragraphs and runs instead of movable pictures.",
+                "OCR uses multiple-line, character-count, confidence and text-coverage thresholds to avoid replacing real photos just because they contain a sign or label.",
+                "Edit PDF calibrates source text width once and applies the same fixed horizontal scale to the live editor and final PDF overlay; it no longer changes the scale when typing ends.",
+                "The first line baseline is measured from its actual mixed-format runs. The source-text cover expands behind longer replacements only up to the available field boundary, avoiding old glyph remnants and protecting neighboring fields."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "English raster OCR is enabled by default and uses bundled Tesseract trained data. Full-page artwork is still opt-in; genuine bounded photos and logos may remain individual Word pictures.",
+                "Edit PDF gives clearer typing and overlap guidance, retains the source text scale while editing, and lets Escape cancel the active edit."
+            })
+        }),
+        new("2.8.7", new DateOnly(2026, 10, 14), "Prevent draggable text-picture exports and preserve existing text scale while editing.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF → Word imports usable invisible OCR text layers and suppresses duplicate hidden glyphs when visible text already occupies the same position.",
+                "Editable-first Word conversion no longer inserts large scans or raster panels that look like text as draggable page/text pictures; bounded genuine photos and logos remain separate pictures.",
+                "Edit PDF preserves the original text horizontal scale and baseline when replacing text. Longer text is no longer silently squeezed into the original line width; users can explicitly reduce size or reposition the text."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Conversion messaging explains that raster-only text with no OCR layer cannot become editable without OCR and may be omitted instead of flattened into an image.",
+                "PDF-to-Word remains editable-first by default; keeping a full-page background picture stays an explicit opt-in."
+            })
+        }),
+        new("2.8.6", new DateOnly(2026, 10, 14), "Preserve underlined PDF text as native editable Word formatting.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF → Word recognizes thin underline paths beneath extracted text and converts them to Word's native single-underline run formatting.",
+                "Matched underline paths are removed from the page artwork, preventing detached lines when Word paragraphs reflow.",
+                "Edit PDF imports recognized underline paths into per-character text styles, covers the original underline stroke when replacing text, and redraws it with the editable text.",
+                "Known table borders are excluded from underline matching and continue to be rebuilt as editable Word table borders."
+            })
+        }),
+        new("2.8.5", new DateOnly(2026, 10, 14), "Fix the PDF-to-Word writer build error and remove a Help view naming warning.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "PDF-to-Word table-cell paragraphs now use the existing AppendInlineRuns writer, fixing compiler error CS0103 while keeping cell text as editable Word runs.",
+                "Renamed the Help guide's nested layout-cache type to TopicLayout so it no longer hides Control.Layout."
+            })
+        }),
+        new("2.8.4", new DateOnly(2026, 10, 14), "Keep PDF text edits aligned and convert PDF text to editable Word paragraphs.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "PDF → Word now writes extracted text as ordinary Word paragraphs and formatted runs instead of floating text boxes, so sentences can be selected, searched, rewritten and reflowed naturally.",
+                "Wrapped lines and hanging-indented list items are grouped into flowing paragraphs; tables remain real editable Word tables and page graphics remain behind the text."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Existing PDF text keeps its baseline when the font family, size, or per-character formatting changes; text-format controls update existing styled runs instead of leaving stale formatting behind.",
+                "Longer replacements fit horizontally within the original line width to avoid spilling into adjacent fields. Deliberate resizing scales mixed-format runs and establishes a new fit width; larger text expands its whiteout cover.",
+                "The inline typing control retains the natural text width while editing, even when the final PDF overlay will be fitted to the original field."
+            })
+        }),
+        new("2.8.3", new DateOnly(2026, 10, 14), "Add PDFs and images in one workflow with visible import feedback.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "The Add files menu, Ctrl+O, empty-state button and workspace add tile can select PDFs and supported images together.",
+                "Mixed imports preserve the order in which files were chosen, including the pages contained in each source file."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "The first newly imported page is selected and previewed automatically so users can immediately confirm the import succeeded.",
+                "Unsupported files dropped into the workspace are reported as skipped instead of being silently ignored."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "The trailing workspace tile now advertises both PDFs and images and opens the combined importer."
+            })
+        }),
+        new("2.8.2", new DateOnly(2026, 10, 14), "Automatic background downloads with user-controlled installation.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Added, new[]
+            {
+                "New releases download automatically in the background after a version check, so users can keep working while the transfer runs.",
+                "Closing or hiding the modeless progress window does not cancel the download.",
+                "After verification, users choose Update now or Update later; postponed updates stay staged and are offered again on the next launch."
+            }),
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "PDF Studio never restarts into an update without the user's explicit Update now choice.",
+                "The staged executable's size, Windows header and SHA-256 are checked on restore and rechecked immediately before installation."
+            })
+        }),
         new("2.8.1", new DateOnly(2026, 10, 10), "Steam-style differential updates download changed parts instead of the full application.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Added, new[]

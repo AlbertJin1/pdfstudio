@@ -18,7 +18,7 @@ namespace PdfStudio.UI;
 public sealed class GuideView : ScrollableControl
 {
     private enum State { Empty, Loading, Ready }
-    private sealed class Layout { public int Width; public int Height; public List<GuideBlock> Blocks = new(); }
+    private sealed class TopicLayout { public int Width; public int Height; public List<GuideBlock> Blocks = new(); }
 
     private const int RevealMs = 640, MinLoaderMs = 320;
     private static int S(int v) => Theme.S(v);
@@ -26,13 +26,13 @@ public sealed class GuideView : ScrollableControl
     private static readonly TextFormatFlags One = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.Left | TextFormatFlags.VerticalCenter;
     private static readonly TextFormatFlags Center = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter;
 
-    private readonly Dictionary<(HelpTopic, int), Layout> cache = new();
+    private readonly Dictionary<(HelpTopic, int), TopicLayout> cache = new();
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 16 };
     private State state = State.Empty;
     private HelpTopic? topic;
     private int index, total, token;
     private string query = "", emptyMessage = "";
-    private Layout? layout;
+    private TopicLayout? layout;
     private long loadStart, revealStart;
     private bool revealing, needsLayout;
 
@@ -115,7 +115,7 @@ public sealed class GuideView : ScrollableControl
     }
 
     /// <summary>Parses (once), measures (once per width), applies the search tint and sets the scroll range.</summary>
-    private Layout? EnsureLayout()
+    private TopicLayout? EnsureLayout()
     {
         if (topic == null || IsDisposed) return null;
         for (var pass = 0; pass < 2; pass++)
@@ -135,7 +135,7 @@ public sealed class GuideView : ScrollableControl
         return cache.TryGetValue((topic, ClientSize.Width), out var last) ? last : null;
     }
 
-    private void MarkMatches(Layout l) { foreach (var b in l.Blocks) b.Match = HelpParser.Matches(b, query); }
+    private void MarkMatches(TopicLayout l) { foreach (var b in l.Blocks) b.Match = HelpParser.Matches(b, query); }
 
     private void ScrollToFirstMatch()
     {
@@ -151,9 +151,9 @@ public sealed class GuideView : ScrollableControl
 
     private static int ContentW(int width) => Math.Max(S(220), width - PadL - PadR);
 
-    private Layout Build(HelpTopic t, int width)
+    private TopicLayout Build(HelpTopic t, int width)
     {
-        var l = new Layout { Width = width, Blocks = HelpParser.Parse(t.Body) };
+        var l = new TopicLayout { Width = width, Blocks = HelpParser.Parse(t.Body) };
         var cw = ContentW(width);
         var y = HeaderH + S(10);
         var first = true;

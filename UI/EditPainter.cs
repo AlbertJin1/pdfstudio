@@ -57,6 +57,25 @@ public static class EditPainter
         return new SizeF((float)Math.Max(maxW, Math.Max(4, o.FontSize) * 0.5), (float)Math.Max(totalH, Math.Max(4, o.FontSize) * 1.25));
     }
 
+    /// <summary>Top-to-baseline distance of the first line, including mixed per-character formatting.</summary>
+    public static double FirstLineAscent(PageEditObject o) => FirstLineMetric(o, ascent: true);
+
+    public static double FirstLineDescent(PageEditObject o) => FirstLineMetric(o, ascent: false);
+
+    private static double FirstLineMetric(PageEditObject o, bool ascent)
+    {
+        var text = (o.Text ?? "").Replace("\r", "");
+        var newline = text.IndexOf('\n');
+        var length = newline < 0 ? text.Length : newline;
+        double Metric(string? font, double size, bool bold, bool italic) => ascent
+            ? TextMetrics.Ascent(font, Math.Max(4, size), bold, italic)
+            : TextMetrics.Descent(font, Math.Max(4, size), bold, italic);
+        if (length <= 0) return Metric(o.FontName, o.FontSize, o.Bold, o.Italic);
+        var runs = RunsForRange(o, NormalizedRuns(o), 0, length);
+        if (runs.Count == 0) return Metric(o.FontName, o.FontSize, o.Bold, o.Italic);
+        return runs.Max(r => Metric(r.FontName, r.FontSize, r.Bold, r.Italic));
+    }
+
     private static List<TextStyleRun> NormalizedRuns(PageEditObject o)
     {
         var text = (o.Text ?? "").Replace("\r", "");

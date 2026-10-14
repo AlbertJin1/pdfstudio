@@ -110,17 +110,31 @@ public sealed class PdfToWordDialog : ModernDialog
 {
     private readonly SourceGroup source;
     private readonly ComboBox quality = MakeCombo(("Standard — 150 dpi (recommended)", 150), ("High — 220 dpi, sharper graphics, bigger file", 220), ("Draft — 96 dpi, smallest file", 96));
+    private readonly CheckBox rasterOcr = new()
+    {
+        Text = "Recognize text inside images/scans (OCR — editable Word text)", AutoSize = true, Checked = true,
+        Margin = new Padding(0, 6, 0, 2)
+    };
+    private readonly CheckBox fullPageArtwork = new()
+    {
+        Text = "Preserve full-page artwork as one selectable picture (less editable)", AutoSize = true, Checked = false,
+        Margin = new Padding(0, 2, 0, 4)
+    };
     public PdfSource Source => source.Source;
     public string ExternalPath => source.FilePath;
     public int GraphicsDpi => ValueOf<int>(quality);
+    public bool EnableRasterOcr => rasterOcr.Checked;
+    public bool IncludeFullPageArtwork => fullPageArtwork.Checked;
 
     public PdfToWordDialog(int total, int selected)
-        : base("PDF → Word", "Turn a PDF into an editable Word document that looks exactly like the PDF. Built in — nothing else to install.", 580, "Convert")
+        : base("PDF → Word", "Convert PDF text into normal, editable Word paragraphs and tables — not one draggable picture per page.", 600, "Convert")
     {
         source = new SourceGroup(total, selected);
         AddRow("Convert", source.Host);
-        AddRow("Graphics quality", quality);
-        AddNote("Every page keeps its size and layout. Text becomes real, editable Word text placed exactly where it was; lines, table borders, shapes and pictures are kept as a picture behind it. Scanned PDFs have no real text, so they come out as page images (no OCR).", 4);
+        AddRow("Image quality", quality);
+        AddWide(rasterOcr);
+        AddWide(fullPageArtwork);
+        AddNote("OCR is enabled by default. Text found inside raster images is added as normal Word paragraphs/runs; text-shaped panels are never exported as draggable pictures when OCR fails (they are reported as omitted instead). OCR is English-focused and may need proofreading. Leave the full-page artwork option off for editability: enabling it inserts one large selectable/draggable picture behind the text. Genuine small photos/logos may remain pictures.", 5);
     }
 
     protected override bool ValidateInput(out string error) { error = source.Validate() ?? ""; return error.Length == 0; }

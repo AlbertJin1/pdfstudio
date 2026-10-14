@@ -1,14 +1,20 @@
 # In-app updates (from your PDF Studio Monitor)
 
 PDF Studio checks your **PDF Studio Monitor** server (the PHP app behind your ngrok address) a few seconds after it
-starts, and from **About → Check for updates**. If you have uploaded a newer `PdfStudio.exe`, the user sees a window with
-the release notes and three choices:
+starts, and from **About → Check for updates**. When a newer `PdfStudio.exe` is found, PDF Studio starts downloading
+and verifying it automatically in the background. The modeless progress window can be closed or hidden at any time;
+that does not cancel the download, and you can keep working while it runs.
+
+When the executable has been fully downloaded and verified, PDF Studio asks the user to choose:
 
 | Button | What happens |
 |---|---|
-| **Update now** | downloads the new exe (progress bar), checks it, swaps it in and restarts PDF Studio |
-| **Later** | closes the window; the user is asked again at the next start |
-| **Skip this version** | never asks about *this* version again (the next, newer version is offered as usual) |
+| **Update now** | checks for unsaved page edits, replaces the executable, and restarts PDF Studio only after the user confirms |
+| **Update later** | keeps the verified update staged and offers it again the next time PDF Studio starts |
+| **Hide window** / **X** on the progress window | hides the progress UI; the background download continues while PDF Studio remains running |
+
+PDF Studio never installs or restarts into an update automatically. An incomplete download is not treated as ready, and
+a completed staged update is checked again on the next launch before the user is prompted. Its size, executable header and SHA-256 are checked when restored and again before installation.
 
 No GitHub, no tokens, nothing to configure: the updater uses the same server address and API key as the usage statistics
 (`UsageTracker.DefaultBaseUrl` / `DefaultApiKey`, or `monitor_url` / `monitor_key` in settings.txt).
@@ -29,7 +35,7 @@ Only `major.minor.build` counts; the 4th number is ignored.
 * The app compares **its own exe's file version** (Windows → Properties → Details → File version) with the highest
   uploaded version. Both sides read the same field, so they cannot disagree.
 * Versions are compared as numbers: `2.10.0` is newer than `2.9.0`.
-* Skipping is remembered in `%LOCALAPPDATA%\PdfStudio\settings.txt` as `update_skip=2.7.0`.
+* Older installs may still have `update_skip=<version>` in settings.txt from the former **Skip this version** button. The current updater ignores this legacy skip preference and uses **Update later**, which keeps the verified download and offers it again on the next launch.
 * `auto_update=0` in the same file turns off the check at startup (the About button still works).
 
 ## Notes

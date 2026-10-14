@@ -43,6 +43,12 @@ public sealed partial class MainForm
         {
             busy = false; busyBar.Visible = false; UseWaitCursor = false;
             header.Enabled = true; ribbon.Enabled = true; UpdateUi();
+            if (pendingReadyUpdatePrompt is { } pending)
+            {
+                pendingReadyUpdatePrompt = null;
+                if (pending.Update is { } ready && pending.DownloadedPath is { } path)
+                    ShowUpdateReadyPrompt(ready, path, false);
+            }
         }
     }
 
@@ -465,8 +471,27 @@ public sealed partial class MainForm
 
     // ───────────────────────── importing ─────────────────────────
 
+    /// <summary>Open one picker that accepts PDFs and supported image formats in the same selection.</summary>
+    private async Task AddFilesFlow()
+    {
+        if (busy) return;
+        var imagePattern = string.Join(";", ImagePdfService.ImageExtensions.Select(ext => "*" + ext));
+        var combinedPattern = "*.pdf;" + imagePattern;
+        using var d = new OpenFileDialog
+        {
+            Filter = $"PDFs and images ({combinedPattern})|{combinedPattern}|PDF files (*.pdf)|*.pdf|Images ({imagePattern})|{imagePattern}",
+            FilterIndex = 1,
+            Multiselect = true,
+            CheckFileExists = true,
+            RestoreDirectory = true,
+            Title = "Add PDFs and images"
+        };
+        if (d.ShowDialog(this) == DialogResult.OK) await AddFilesAsync(d.FileNames, -1);
+    }
+
     private async Task AddPdfsFlow()
     {
+        if (busy || accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied) return;
         using var d = new OpenFileDialog { Filter = "PDF files (*.pdf)|*.pdf", Multiselect = true, Title = "Add PDF files" };
         if (d.ShowDialog(this) == DialogResult.OK) await AddFilesAsync(d.FileNames, -1);
     }
@@ -474,7 +499,16 @@ public sealed partial class MainForm
     /// <summary>"Add images": the pictures become pages in the workspace. No dialog and no PDF file is made here.</summary>
     private async Task PickImagesFlow()
     {
-        using var d = new OpenFileDialog { Filter = ImagePdfService.ImageFilter, Multiselect = true, Title = "Choose images" };
+        if (busy) return;
+        var imagePattern = string.Join(";", ImagePdfService.ImageExtensions.Select(ext => "*" + ext));
+        using var d = new OpenFileDialog
+        {
+            Filter = $"Image files ({imagePattern})|{imagePattern}",
+            Multiselect = true,
+            CheckFileExists = true,
+            RestoreDirectory = true,
+            Title = "Add images as pages"
+        };
         if (d.ShowDialog(this) == DialogResult.OK) await AddFilesAsync(d.FileNames, -1);
     }
 
@@ -493,104 +527,159 @@ public sealed partial class MainForm
 
     private async Task InsertPdfAfterSelection()
     {
+        if (busy || accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied) return;
         using var d = new OpenFileDialog { Filter = "PDF files (*.pdf)|*.pdf", Multiselect = true, Title = "Insert PDF pages" };
         if (d.ShowDialog(this) != DialogResult.OK) return;
         var t = Targets();
         await AddFilesAsync(d.FileNames, t.Count > 0 ? pages.IndexOf(t[^1]) + 1 : -1);
     }
 
-    /// <summary>Adds PDFs and images (via the page-size dialog) to the workspace.</summary>
+    /// <summary>Add PDFs and image files to the workspace, preserving their chosen order.</summary>
     private async Task AddFilesAsync(IEnumerable<string> files, int insertAt)
     {
-        if (busy) return;
-        var all = files.Where(File.Exists).ToList();
-        var pdfs = all.Where(f => Ext(f) == ".pdf").ToList();
-        var imgs = all.Where(ImagePdfService.IsImage).ToList();
-        if (pdfs.Count + imgs.Count == 0)
+        if (busy || accessDenied || AccessControlService.State == AccessControlService.AccessState.Denied) return;
+
+        var existing = files
+            .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            .ToList();
+        var unsupported = existing
+            .Where(path => Ext(path) != ".pdf" && !ImagePdfService.IsImage(path))
+            .ToList();
+        var inputs = existing
+            .Where(path => Ext(path) == ".pdf" || ImagePdfService.IsImage(path))
+            .Select((path, index) => (Index: index, Path: path))
+            .ToList();
+
+        if (inputs.Count == 0)
         {
-            SetStatus("Nothing to add — use PDF or image files.");
+            SetStatus("Nothing to add — choose PDF or image files.");
+            if (unsupported.Count > 0)
+                MessageBox.Show(this, "These files are not supported and were skipped:\n\n" +
+                    string.Join("\n", unsupported.Select(path => Path.GetFileName(path))), "PDF Studio",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var added = new List<PageItem>();
+        // Each input fills a result slot; PDF pages and image pages are assembled from these slots afterwards so
+        // a mixed selection such as PDF → photo → PDF retains the user's intended document order.
+        var pageSlots = new List<PageItem>?[inputs.Count];
         var errors = new List<string>();
+        var locked = new List<(int Index, string Path)>();
+        var pdfInputs = inputs.Where(item => Ext(item.Path) == ".pdf").ToList();
+        var imageInputs = inputs.Where(item => ImagePdfService.IsImage(item.Path)).ToList();
 
-        var locked = new List<string>();
-        if (pdfs.Count > 0)
-            await RunBusy("Reading PDFs…", () =>
+        if (pdfInputs.Count > 0)
+        {
+            var pdfRead = await RunBusy("Reading PDFs…", () =>
             {
-                foreach (var p in pdfs)
-                    try { added.AddRange(pdf.LoadPages(p)); }
+                foreach (var item in pdfInputs)
+                {
+                    try { pageSlots[item.Index] = pdf.LoadPages(item.Path); }
                     catch (Exception ex)
                     {
-                        if (PdfPasswords.IsPasswordProblem(ex)) locked.Add(p);
-                        else errors.Add($"{Path.GetFileName(p)} — {Friendly(ex)}");
+                        if (PdfPasswords.IsPasswordProblem(ex)) locked.Add(item);
+                        else errors.Add($"{Path.GetFileName(item.Path)} — {Friendly(ex)}");
                     }
+                }
             });
+            if (!pdfRead) return;
+        }
 
-        // password-protected PDFs: ask for the password (three tries per file)
-        foreach (var lp in locked)
+        // Password-protected PDFs are prompted on the UI thread, with up to three attempts per file.
+        foreach (var item in locked)
         {
-            var name = Path.GetFileName(lp);
+            var name = Path.GetFileName(item.Path);
             var unlocked = false;
             for (var attempt = 0; attempt < 3 && !unlocked; attempt++)
             {
                 var pw = InputDialog.Show(this, "Password required",
-                    $"“{name}” is password-protected. Enter its password" + (attempt > 0 ? " (that one was not accepted)" : "") + ":", "", true);
+                    $"“{name}” is password-protected. Enter its password" +
+                    (attempt > 0 ? " (that one was not accepted)" : "") + ":", "", true);
                 if (pw is null) break;
-                PdfPasswords.Set(lp, pw);
-                try { added.AddRange(pdf.LoadPages(lp)); unlocked = true; thumbs.RetryFailed(); }
+                PdfPasswords.Set(item.Path, pw);
+                try
+                {
+                    pageSlots[item.Index] = pdf.LoadPages(item.Path);
+                    unlocked = true;
+                    thumbs.RetryFailed();
+                }
                 catch (Exception ex) when (PdfPasswords.IsPasswordProblem(ex)) { }
-                catch (Exception ex) { errors.Add($"{name} — {ex.Message}"); unlocked = true; break; }
+                catch (Exception ex)
+                {
+                    errors.Add($"{name} — {Friendly(ex)}");
+                    unlocked = true;
+                }
             }
             if (!unlocked) errors.Add($"{name} — skipped (password not provided or not accepted).");
         }
 
-        // Pictures are only ADDED as pages here (one at a time, so one bad file never stops the rest, and many
-        // pictures never pile up in memory). Nothing is saved: the PDF is made when the user exports.
-        if (imgs.Count > 0)
+        // An image becomes a page in the workspace; no output PDF is saved until the user chooses Export PDF.
+        // Process pictures one at a time to avoid retaining a whole batch of full-resolution images in memory.
+        if (imageInputs.Count > 0)
         {
-            var opts = new ImagePdfOptions { PageSize = ImagePdfPageSize.A4, Orientation = ImagePdfOrientation.Auto, Fit = ImagePdfFit.Contain, MarginMm = 10 };
-            var perImage = new List<PageItem>?[imgs.Count];
-            var imageErrors = new string?[imgs.Count];
-            await RunBusy("Adding images…", () =>
+            var opts = new ImagePdfOptions
             {
-                for (var i = 0; i < imgs.Count; i++)
+                PageSize = ImagePdfPageSize.A4,
+                Orientation = ImagePdfOrientation.Auto,
+                Fit = ImagePdfFit.Contain,
+                MarginMm = 10
+            };
+            var imageErrors = new string?[imageInputs.Count];
+            var imageRead = await RunBusy("Adding images…", () =>
+            {
+                for (var i = 0; i < imageInputs.Count; i++)
                 {
-                    var img = imgs[i];
+                    var item = imageInputs[i];
                     var tmp = Path.Combine(sessionDir, $"Image {Interlocked.Increment(ref tempCounter)}.pdf");
                     try
                     {
-                        images.ImagesToPdf(tmp, new[] { img }, opts);
-                        ImagePdfService.ImagePageSources[tmp] = new ImagePageSource(img, opts);
-                        perImage[i] = pdf.LoadPages(tmp, Path.GetFileName(img));
+                        images.ImagesToPdf(tmp, new[] { item.Path }, opts);
+                        ImagePdfService.ImagePageSources[tmp] = new ImagePageSource(item.Path, opts);
+                        pageSlots[item.Index] = pdf.LoadPages(tmp, Path.GetFileName(item.Path));
                     }
                     catch (Exception ex)
                     {
                         ImagePdfService.ImagePageSources.TryRemove(tmp, out _);
                         try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                        imageErrors[i] = $"{Path.GetFileName(img)} — {Friendly(ex)}";
+                        imageErrors[i] = $"{Path.GetFileName(item.Path)} — {Friendly(ex)}";
                     }
                     var done = i + 1;
-                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(() => SetStatus($"Adding images… {done} of {imgs.Count}")); } catch { }
+                    try
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke(() => SetStatus($"Adding images… {done} of {imageInputs.Count}"));
+                    }
+                    catch { }
                 }
             });
-            foreach (var l in perImage) if (l is not null) added.AddRange(l);
-            errors.AddRange(imageErrors.Where(e => e is not null).Select(e => e!));
+            if (!imageRead) return;
+            errors.AddRange(imageErrors.Where(error => error is not null).Select(error => error!));
         }
+
+        var added = pageSlots.Where(slot => slot is not null).SelectMany(slot => slot!).ToList();
+        errors.AddRange(unsupported.Select(path => $"{Path.GetFileName(path)} — unsupported file type (skipped)."));
 
         if (added.Count > 0)
         {
             var at = insertAt < 0 || insertAt > pages.Count ? pages.Count : insertAt;
             Edit(() => pages.InsertRange(at, added));
-            // Newly added pages are deliberately NOT auto-selected; the user's selection is kept.
-            grid.EnsureVisible(pages.IndexOf(added[0]));
-            Notify(imgs.Count > 0 && pdfs.Count == 0
-                ? $"Added {added.Count} image(s) as pages. Nothing is saved until you export."
+
+            // Show immediate evidence that import succeeded: select the first newly added page and preview it.
+            var firstAddedIndex = pages.IndexOf(added[0]);
+            grid.SelectOnly(firstAddedIndex);
+            grid.EnsureVisible(firstAddedIndex);
+            Notify(imageInputs.Count > 0 && pdfInputs.Count == 0
+                ? $"Added {added.Count} image page(s). Nothing is saved until you export."
                 : $"Added {added.Count} page(s).");
         }
+        else if (errors.Count == 0)
+        {
+            SetStatus("No pages were added. Check the selected files and try again.");
+        }
+
         if (errors.Count > 0)
-            MessageBox.Show(this, "Some files could not be added:\n\n" + string.Join("\n", errors), "PDF Studio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "Some files could not be added:\n\n" + string.Join("\n", errors),
+                "PDF Studio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     private async Task SaveImagesAsPdf(IReadOnlyList<string> list, ImagePdfOptions opts)
@@ -721,13 +810,20 @@ public sealed partial class MainForm
     {
         using var dlg = new PdfToWordDialog(pages.Count, grid.Selection.Count);
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        if (dlg.IncludeFullPageArtwork)
+        {
+            var choice = MessageBox.Show(this,
+                "Full-page artwork adds one large picture behind the Word text. That picture can be selected or dragged in Word and makes the document less editable.\n\nFor normal editable paragraphs, choose No and leave this option off.\n\nContinue with the page-sized picture anyway?",
+                "PDF → Word — full-page picture", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (choice != DialogResult.Yes) return;
+        }
         var (src, baseName) = await ResolveSourcePdf(dlg.Source, dlg.ExternalPath);
         if (src is null) return;
 
         using var save = new SaveFileDialog { Filter = "Word document (*.docx)|*.docx", FileName = baseName + ".docx" };
         if (save.ShowDialog(this) != DialogResult.OK) return;
         var target = save.FileName;
-        var options = new PdfToWordOptions { GraphicsDpi = dlg.GraphicsDpi };
+        var options = new PdfToWordOptions { GraphicsDpi = dlg.GraphicsDpi, IncludeFullPageArtwork = dlg.IncludeFullPageArtwork, EnableRasterOcr = dlg.EnableRasterOcr };
         PdfToWordResult? result = null;
         if (await RunBusy("Converting PDF → Word…", () =>
         {
@@ -795,10 +891,10 @@ public sealed partial class MainForm
 
     private bool updateBusy;
 
-    /// <summary>Looks for a newer version on the monitor server. manual = the user asked for it (so "up to date" and errors are shown).</summary>
+    /// <summary>Looks for a newer release. Finding one automatically begins a background download.</summary>
     private async Task CheckForUpdatesAsync(bool manual)
     {
-        if (updateBusy || busy) return;
+        if (updateBusy) return;
         updateBusy = true;
         try
         {
@@ -809,33 +905,148 @@ public sealed partial class MainForm
                 if (manual) MessageBox.Show(this, result.Error, "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
             if (result.Update is not { } update)
             {
                 if (manual) MessageBox.Show(this, $"You are running the latest version ({UpdateService.CurrentVersion}).", "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            if (!manual && UpdateService.SkippedVersion == update.Version) return;
-            if (busy) return;                                   // the user started a task meanwhile: don't interrupt it
 
-            using var dlg = new UpdateDialog(update);
-            dlg.ShowDialog(this);
-            if (dlg.SkipRequested) { UpdateService.SkippedVersion = update.Version; return; }
-            if (!dlg.Downloaded || dlg.DownloadedPath is null) return;
 
-            if (dirty && pages.Count > 0 &&
-                MessageBox.Show(this, "PDF Studio will restart to finish the update, and you have page changes that haven't been exported. Restart anyway?",
-                                "PDF Studio", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            var background = BackgroundUpdateService.Current;
+            if (background.Status == BackgroundUpdateStatus.Ready && background.Update is { } ready &&
+                string.Equals(ready.Version, update.Version, StringComparison.OrdinalIgnoreCase))
             {
-                try { File.Delete(dlg.DownloadedPath); } catch { }
-                SetStatus("Update postponed.");
+                if (manual) ShowUpdateReadyPrompt(ready, background.DownloadedPath, true);
                 return;
             }
-            UpdateService.ApplyAndRestart(dlg.DownloadedPath);   // swaps the exe and starts the new version
-            dirty = false;                                       // already confirmed above: don't ask again on close
-            Close();
+            if (background.Status == BackgroundUpdateStatus.Downloading && background.Update is { } downloading &&
+                string.Equals(downloading.Version, update.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                if (manual) ShowUpdateProgressWindow();
+                return;
+            }
+
+            // No modal dialog and no manual click required. The progress window is modeless and can be closed
+            // without cancelling this download.
+            BackgroundUpdateService.Start(update);
         }
         catch (Exception ex) { if (manual) ShowError(ex); }
         finally { updateBusy = false; }
+    }
+
+    private void OnBackgroundUpdateChanged(BackgroundUpdateSnapshot snapshot)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => HandleBackgroundUpdateState(snapshot))); } catch { }
+            return;
+        }
+        HandleBackgroundUpdateState(snapshot);
+    }
+
+    private void HandleBackgroundUpdateState(BackgroundUpdateSnapshot snapshot)
+    {
+        if (IsDisposed) return;
+        var previous = lastBackgroundUpdateStatus;
+        lastBackgroundUpdateStatus = snapshot.Status;
+
+        switch (snapshot.Status)
+        {
+            case BackgroundUpdateStatus.Idle:
+                break;
+
+            case BackgroundUpdateStatus.Downloading:
+                if (previous != BackgroundUpdateStatus.Downloading)
+                {
+                    SetStatus($"Downloading PDF Studio {snapshot.Update?.Version ?? "update"} in the background. You can keep working.");
+                    ShowUpdateProgressWindow();
+                }
+                break;
+
+            case BackgroundUpdateStatus.Ready:
+                if (snapshot.Update is not { } update || string.IsNullOrWhiteSpace(snapshot.DownloadedPath)) return;
+                CloseUpdateProgressWindow();
+                if (!File.Exists(snapshot.DownloadedPath))
+                {
+                    BackgroundUpdateService.Start(update);
+                    return;
+                }
+                SetStatus($"PDF Studio {update.Version} is downloaded and ready. Choose when to update.");
+                if (busy) pendingReadyUpdatePrompt = snapshot;
+                else ShowUpdateReadyPrompt(update, snapshot.DownloadedPath, false);
+                break;
+
+            case BackgroundUpdateStatus.Failed:
+                SetStatus($"Could not download PDF Studio {snapshot.Update?.Version ?? "update"}. You can retry from Check for updates.");
+                break;
+        }
+    }
+
+    private void ShowUpdateProgressWindow()
+    {
+        var state = BackgroundUpdateService.Current;
+        if (state.Update is not { } update || state.Status != BackgroundUpdateStatus.Downloading) return;
+        if (updateDownloadWindow is null || updateDownloadWindow.IsDisposed)
+        {
+            updateDownloadWindow = new UpdateDownloadDialog(update);
+            updateDownloadWindow.RetryRequested += latest => BackgroundUpdateService.Start(latest);
+            updateDownloadWindow.FormClosed += (_, _) => updateDownloadWindow = null;
+            updateDownloadWindow.Show(this);
+            return;
+        }
+        updateDownloadWindow.ShowProgressAgain(this);
+    }
+
+    private void CloseUpdateProgressWindow()
+    {
+        if (updateDownloadWindow is not { IsDisposed: false }) { updateDownloadWindow = null; return; }
+        updateDownloadWindow.ClosePermanently();
+        updateDownloadWindow = null;
+    }
+
+    private void ShowUpdateReadyPrompt(UpdateInfo update, string? downloadedPath, bool force)
+    {
+        if (IsDisposed || string.IsNullOrWhiteSpace(downloadedPath) || !File.Exists(downloadedPath)) return;
+        if (!force && !promptedUpdateVersions.Add(update.Version)) return;
+        promptedUpdateVersions.Add(update.Version);
+
+        using var dlg = new UpdateReadyDialog(update);
+        if (dlg.ShowDialog(this) != DialogResult.OK || !dlg.ShouldUpdateNow)
+        {
+            SetStatus($"PDF Studio {update.Version} is ready. The verified download was kept for later.");
+            return;
+        }
+
+        if (!UpdateService.CanSelfUpdate(out var reason))
+        {
+            MessageBox.Show(this, reason, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return; // keep the downloaded update so it can still be applied manually
+        }
+
+        if (dirty && pages.Count > 0 &&
+            MessageBox.Show(this,
+                "PDF Studio needs to restart to finish the update. You have page changes that have not been exported. Restart and lose those unsaved changes?",
+                "Update PDF Studio", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            SetStatus($"Update postponed. PDF Studio {update.Version} remains downloaded and ready.");
+            return; // Update later must not discard the downloaded payload.
+        }
+
+        try
+        {
+            UpdateService.ApplyAndRestart(downloadedPath, update);
+            dirty = false; // the restart was explicitly confirmed above
+            Close();
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex);
+            SetStatus(BackgroundUpdateService.Current.Status == BackgroundUpdateStatus.Idle
+                ? "The staged update was invalid or missing. Use Check for updates to download it again."
+                : "The update is still downloaded. You can try again later.");
+        }
     }
 
     /// <summary>The help guide is a normal (non-modal) window so you can read it while you work.</summary>

@@ -329,7 +329,12 @@ public sealed class ModernRenderer : ToolStripProfessionalRenderer
             else
             {
                 var left = Menus.TextLeft(tag);
-                e.TextRectangle = new Rectangle(left, 0, Math.Max(10, it.Width - left - Theme.S(12)), it.Height);
+                var shortcutReserve = it is ToolStripMenuItem menuItem && !string.IsNullOrEmpty(menuItem.ShortcutKeyDisplayString)
+                    ? TextRenderer.MeasureText(menuItem.ShortcutKeyDisplayString, menuItem.Font, new Size(1000, 100), TextFormatFlags.NoPadding).Width + Theme.S(42)
+                    : Theme.S(12);
+                // Reserve the shortcut column explicitly; otherwise a long caption such as "Add PDF or image…"
+                // can paint underneath Ctrl+O and appears jammed together in the menu.
+                e.TextRectangle = new Rectangle(left, 0, Math.Max(10, it.Width - left - shortcutReserve), it.Height);
             }
             e.TextFormat = (isShortcut ? e.TextFormat : TextFormatFlags.Left | TextFormatFlags.EndEllipsis)
                 | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
@@ -399,7 +404,7 @@ public static class Menus
             var parts = text.Split('\t');
             var it = new ToolStripMenuItem(parts[0])
             {
-                Padding = new Padding(10, 7, 14, 7), Tag = glyphs[n], Margin = new Padding(0, 1, 0, 1)
+                Padding = new Padding(10, 7, 14, 7), Tag = glyphs[n], Margin = new Padding(0, 1, 0, 1), ShowShortcutKeys = true
             };
             if (parts.Length > 1) it.ShortcutKeyDisplayString = parts[1];
             if (click is not null) it.Click += (_, _) => click();

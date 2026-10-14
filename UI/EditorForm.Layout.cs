@@ -34,7 +34,6 @@ public sealed partial class EditorForm
     private readonly NumericUpDown mTop = MarginNum(), mBottom = MarginNum(), mLeft = MarginNum(), mRight = MarginNum();
 
     private FlowLayoutPanel? editBar;
-    private string editOrigText = "";
 
     public Dictionary<Guid, PageMargins> MarginsResult => margins.ToDictionary(k => k.Key, v => v.Value.Clone());
 
@@ -751,21 +750,6 @@ public sealed partial class EditorForm
         return editBar.Bounds.Contains(canvas.PointToClient(Cursor.Position));
     }
 
-    /// <summary>Cancel: discard what was typed and restore the text (or remove it if it was brand new).</summary>
-    private void CancelInlineEdit()
-    {
-        if (editBox == null || editObj == null) return;
-        var o = editObj;
-        if (editIsNew) o.Text = "";
-        else if (pendingConv is { } pc) { o.Text = pc.OrigText; convDirty = false; }
-        else
-        {
-            o.Text = editOrigText; o.X = editOrigPos.X; o.Y = editOrigPos.Y;
-            if (editGripUndo && undo.Count > 0) { undo.RemoveAt(undo.Count - 1); UpdateUndoButtons(); }
-        }
-        CommitInlineEdit();
-    }
-
     // ═════════════════════════ visible frame around the text being edited ═════════════════════════
 
     /// <summary>
@@ -943,7 +927,7 @@ public sealed partial class EditorForm
             if (Math.Abs(dx) * zoom < 3 && Math.Abs(dy) * zoom < 3) return;
             gripUndoPushed = true;
             // a new / converted text already has an undo step covering the whole edit; an existing text gets its own
-            if (!editIsNew && pendingConv == null) { UndoBefore(); editGripUndo = true; }
+            if (!editIsNew && pendingConv == null) UndoBefore();
             convDirty = true; dirty = true;
         }
         var (sdx, sdy) = SnapMoveDelta(editObj, dx, dy);

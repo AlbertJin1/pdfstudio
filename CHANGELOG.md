@@ -1,12 +1,145 @@
 # Changelog
 
+## [2.8.13] - 2026-10-15
+
+_Resolve ambiguous ImageFormat enum references in PDF-to-Word raster processing._
+
+### Fixed
+- Added the `DrawingImageFormat` alias for `System.Drawing.Imaging.ImageFormat` and used it for PNG/JPEG encoding of OCR crops and rendered images, resolving CS0104 ambiguity with `TesseractOCR.Enums.ImageFormat`.
+- Kept the intended GDI+ image encoding behavior unchanged; Tesseract's own enum remains separately imported for Tesseract APIs.
+
+## [2.8.12] - 2026-10-15
+
+_Fix the duplicate inline-edit cancellation member and make Cancel restore the complete edit-session state._
+
+### Fixed
+- Removed the stale `CancelInlineEdit` implementation from the layout partial; the editor now has one canonical cancellation method, resolving CS0111.
+- Cancel now restores the original objects and the exact undo/redo history from the start of the edit session, discarding history entries created by typing, formatting, or moving text.
+- Removed legacy inline-edit position/text fields that were used only by the duplicate cancellation implementation.
+
+## [2.8.11] - 2026-10-15
+
+_Make raster text panels favor editable Word text, keep Edit PDF scale consistent across wider font substitutions, and clean up the Add files menu._
+
+### Fixed
+- PDF → Word upscales small raster panels before OCR (with a bounded maximum image side), uses more tolerant line/word confidence for text-shaped panels, and maps recognized word positions back to PDF coordinates. This improves recovery of image-based paragraph blocks such as Mission statements.
+- Text-like panels cannot fall through to the separate-picture path just because antialiasing makes them look photographic; ambiguous text panels are omitted with the existing conversion warning rather than exported as draggable pictures when OCR still cannot read them.
+- Edit PDF calibrates and reapplies the source horizontal text scale across a wider safe range, so replacement text remains consistent between live editing and the committed PDF when the installed font metrics differ from the embedded PDF font.
+- Removed the inline Ctrl+O label from the Add PDF / image menu item because it collided visually with the caption. Ctrl+O remains supported as a keyboard shortcut.
+
+### Changed
+- Editable-first Word conversion explicitly prioritizes searchable, editable text over retaining a text-shaped raster panel as a picture. OCR results may need proofreading; genuine small, bounded photographs and logos may still be retained as pictures.
+
+## [2.8.10] - 2026-10-14
+
+_Make raster text conversion editable-first even for nested image forms, and keep Edit PDF's live text scale consistent._
+
+### Fixed
+- PDF → Word now discovers images nested in Form XObjects and runs a page-level OCR fallback after removing vector text, recovering raster paragraphs that per-image OCR missed.
+- OCR retains faint but legible lines, uses a separate low-threshold text-detection flag, and suppresses a matched text-image region from the Word picture list. Paragraph-like and wide text-panel crops are omitted rather than becoming floating draggable pictures when OCR cannot recover them.
+- Default PDF → Word output never emits a page-sized artwork picture unless the user explicitly enables the appearance-first option; individual pictures are restricted to small, bounded photo/logo candidates.
+- Edit PDF reapplies the fixed calibrated character width after typing and after font/style changes, preventing newly inserted characters from reverting to 100% width and shifting the line when editing ends.
+- The text-edit cancel path removes a newly created object once, and the Add PDF menu uses a shorter caption with explicit shortcut-key spacing.
+
+### Changed
+- Edit PDF preserves the text's source baseline and horizontal scale instead of squeezing text to fit. When a replacement exceeds the detected neighboring-field gap, PDF Studio warns rather than silently distorting the font.
+- PDF → Word remains editability-first; low-confidence text regions are not quietly converted into movable pictures. Review OCR output for accuracy, especially on complex scans or non-English pages.
+
+## [2.8.9] - 2026-10-14
+
+_Make rasterized text editable and preserve source text geometry while editing._
+
+### Fixed
+- PDF → Word now attempts OCR on meaningful embedded image regions before deciding whether they are photos. Dense, confident multi-line text is emitted as ordinary Word paragraphs/runs; a paragraph-like raster object is no longer accepted as a movable picture merely because its sampled pixels look photographic.
+- OCR classification uses line count, recognized character count, confidence and text coverage to avoid replacing ordinary photos based on a few readable words. Ambiguous text-like panels are omitted rather than exported as floating text pictures if they cannot be recognized.
+- Edit PDF calibrates the original line's horizontal scale once against its PDF glyph bounds and applies the same character scaling to the live edit control. The scale no longer resets when typing ends, so the text width does not jump between edit mode and the saved overlay.
+- Edit PDF anchors the first line to the baseline calculated from its actual mixed-format runs, rather than only the primary font metrics.
+- The original-text cover extends behind longer replacements up to the available field boundary, clearing old glyphs without whiteing-out the next field.
+
+### Changed
+- PDF → Word keeps OCR enabled by default; English raster text is recognized with the bundled Tesseract engine and trained data. Full-page artwork remains an explicit opt-in, while bounded genuine photos/logos may remain individual pictures.
+- Edit PDF uses clearer inline guidance and retains the font size/baseline while warning before a long replacement overlaps a neighboring field. Escape cancels the current edit.
+
+## [2.8.7] - 2026-10-14
+
+_Prevent draggable text-picture exports and stop silent text squeezing in Edit PDF._
+
+### Fixed
+- PDF → Word now imports usable invisible OCR text layers; hidden glyphs overlapping already-visible text are filtered to avoid duplicate words.
+- Editable-first Word conversion skips page-sized scans and image panels that look like text instead of inserting them as draggable pictures. Bounded genuine photos/logos remain separate picture objects.
+- Edit PDF preserves the original horizontal text scale and baseline when editing existing text. Longer text is not silently squeezed into the original line width; font-size changes or moving/resizing are explicit user actions.
+
+### Changed
+- The conversion dialog explains that raster-only text without an OCR layer needs OCR before it can be converted into editable text; those panels may be omitted rather than left as text pictures.
+- Full-page artwork remains an opt-in for users who prefer appearance over editability.
+
+## [2.8.6] - 2026-10-14
+
+_Preserve PDF underlines as real, editable Word text formatting._
+
+### Fixed
+- PDF → Word detects short horizontal paths that sit immediately beneath extracted glyphs and writes `w:u` single-underline formatting on the matching Word text runs.
+- Matched underline paths are stripped from the background artwork, so the underlines move and reflow with their text instead of appearing as detached lines or pictures.
+- Edit PDF imports recognized underline strokes as per-character text styles, covers the original line when a text block is edited, and redraws the underline with the editable text object.
+- Table borders already recognized as table rules are excluded from underline detection and remain editable Word table borders.
+
+## [2.8.5] - 2026-10-14
+
+_Fix the PDF-to-Word writer build error and remove a Help view naming warning._
+
+### Fixed
+- PDF-to-Word table-cell paragraphs now call the existing `AppendInlineRuns` writer, fixing compiler error CS0103 (`AppendRuns` does not exist) while retaining ordinary editable Word text runs.
+- Renamed the Help guide's nested layout-cache type to `TopicLayout` so it no longer hides `Control.Layout`.
+
+## [2.8.4] - 2026-10-14
+
+_Keep existing PDF text aligned and make PDF-to-Word text naturally editable._
+
+### Changed
+- PDF → Word emits ordinary Word paragraphs and formatted runs for loose text instead of a separate floating text box for every extracted line.
+- Wrapped lines are grouped into flowing paragraphs; hanging indents and common list markers are preserved, and text can be selected, searched, rewritten and reflowed in Word.
+- Tables remain real editable Word tables and the original non-text artwork remains behind the extracted text.
+
+### Fixed
+- Existing PDF text keeps its original baseline when the font family, size, or per-character formatting changes. Text-format controls update the selected run(s) rather than leaving stale formatting behind, and the whiteout cover expands when larger text needs it.
+- Longer replacements are horizontally fitted to the original line's width to avoid spilling into adjacent fields; ordinary added text is not constrained. Deliberately resizing an existing line scales its run sizes and establishes a new fit width.
+- The inline editor keeps a natural-width typing surface so longer edits remain visible before the final line-width fit is applied.
+
+## [2.8.3] - 2026-10-14
+
+_Add PDFs and images in one workflow, with clear import feedback._
+
+### Added
+- The Add files menu, Ctrl+O, empty-state button and trailing workspace tile can open a single multi-select picker for PDFs and supported images.
+- Imported mixed selections retain the user's chosen file order, including pages within each PDF and supported multi-frame images.
+
+### Changed
+- After importing, PDF Studio selects the first newly added page and opens its preview so successful imports are immediately visible.
+- Unsupported dropped files are reported as skipped instead of being silently ignored.
+
+### Fixed
+- The workspace add tile now clearly advertises PDFs and images rather than PDFs only.
+
+## [2.8.2] - 2026-10-14
+
+_Automatic background downloads with user-controlled installation._
+
+### Added
+- New releases start downloading automatically in the background after the version check; users can keep working while the transfer runs.
+- The progress window is modeless and can be hidden or closed without cancelling the download.
+- Once the update is downloaded and verified, PDF Studio asks the user to choose **Update now** or **Update later**. A postponed update remains staged and is offered again on the next launch.
+
+### Changed
+- PDF Studio never restarts into an update without the user's explicit **Update now** choice.
+- The staged executable's size, Windows executable header, and SHA-256 are checked when restored and again immediately before installation.
+
 ## [2.8.1] - 2026-10-10
 
 _Steam-style differential updates download changed parts instead of redownloading the complete application._
 
 ### Added
 - The monitor creates a content-defined chunk manifest for each new PDF Studio release.
-- The updater reuses unchanged chunks from the installed executable and downloads only missing chunks, then reconstructs the new executable locally.
+- The updater reuses unchanged chunks from the installed executable and downloads only missing parts, then reconstructs the new executable locally.
 - Update progress identifies preparation, downloading changed parts, rebuilding, and verification.
 
 ### Changed

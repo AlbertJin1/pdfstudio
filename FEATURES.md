@@ -3,7 +3,7 @@
 This is the current feature set. What changed in each version, and when, is in `CHANGELOG.md` (also in the app: Help › Version history).
 
 ## Page workspace
-- Add many PDFs and images into one workspace (button, menu, or drag files onto the window / between pages)
+- Add many PDFs and images into one workspace (combined multi-select picker, separate PDF/image pickers, or drag-and-drop); mixed selections keep their input order, and the first new page is previewed automatically
 - **Drag-and-drop reorder**: grab any page (or a multi-selection) and drop it between two pages; insertion marker, auto-scroll, Esc cancels, one-step undo
 - Select: click, Ctrl+click, Shift+click range, rubber-band, checkbox, Ctrl+A, invert, odd / even, by range ("1-3, 5, 8-")
 - Rotate left / right (also 180° via twice), duplicate, delete, reverse (selection or all), insert blank pages (size / orientation / position)
@@ -22,7 +22,7 @@ This is the current feature set. What changed in each version, and when, is in `
 - Password protection (open password, owner password, allow print / copy / edit)
 
 ## Conversion
-- PDF → Word (.docx) — built in, no other software: same page size and layout, tables rebuilt as real Word tables (merged cells, borders, text in the cells), other text editable on exact positions, graphics/photos as a picture behind it
+- PDF → Word (.docx) — built in, no other software: page size retained, tables rebuilt as real Word tables (merged cells, borders, text in cells), other extracted text as ordinary flowing Word paragraphs/runs (not text boxes), underline strokes mapped to native editable Word underline formatting when detected, bounded genuine photos/logos as separate images (no full-page image by default); image-based text with hidden OCR text is extracted, and raster-only English text panels are upscaled and OCRed into ordinary Word paragraphs/runs; text-shaped panels are never left as draggable pictures if OCR fails (they are reported as omitted instead); font substitutions may change exact line breaks
 - PDF → images: PNG, JPEG, WebP, BMP, TIFF, GIF; 36–1200 dpi; JPEG/WebP quality; all / selected / range of pages
 - Images → PDF: PNG, JPG, BMP, GIF, TIFF (multi-page), WebP; page size = same as image, A4, A3, A5, B5, Letter, Legal, Tabloid or custom mm; orientation auto / portrait / landscape; fit inside / fill / stretch / actual size; margin; live to-scale preview; EXIF rotation honoured; JPEGs embedded losslessly
 
@@ -62,8 +62,8 @@ This is the current feature set. What changed in each version, and when, is in `
 
 ## Edit PDF window (2.2) — ribbon **Edit PDF**, Ctrl+E
 A separate full-screen editor for the active page (page arrows / Page Up-Down to move through the document).
-- **Edit existing text**: hover any line of text already in the PDF, click it, retype it. The original line is covered with the
-  sampled paper colour and the new text is placed in the same font, size and colour (mapped to an installed font). Unchanged text is left alone.
+- **Edit existing text**: hover any line of text already in the PDF, click it, retype it. Recognized underline strokes are imported as per-character formatting and redrawn with the editable text; the old line is covered with the
+  sampled paper colour and replacement text is placed on the same baseline in the mapped font, size and colour. Existing text keeps its source horizontal scale and baseline while you type; it is no longer silently squeezed. If edited text exceeds its field, explicitly reduce font size or move/resize the text object.
   Delete the replacement text to remove the original line.
 - **Add text** anywhere; **change font, size, bold / italic / underline, colour** at any time (also for edited text). Double-click to retype.
 - **Images, logos and signatures**: insert a picture or *draw a signature* (saved with a transparent background).

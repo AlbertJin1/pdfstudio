@@ -2,6 +2,7 @@ using PdfStudio.Models;
 using PdfStudio.Services;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.Runtime.InteropServices;
 
 namespace PdfStudio.UI;
 
@@ -51,15 +52,16 @@ public sealed partial class EditorForm : Form
     private RichTextBox? editBox;
     private EditFrame? editFrame;                // the visible frame around the text box while editing
     private PageEditObject? editObj;
+    private List<PageEditObject>? editBeforeSnapshot;
+    private List<(int Page, List<PageEditObject> Objs)>? editUndoSnapshot, editRedoSnapshot;
     private bool editIsNew;
     private (string OrigText, List<PageEditObject> Before)? pendingConv;
     private bool convDirty;
     private PdfTextBlock? pendingBlock;          // text line pressed but not yet converted: click = edit it, drag = move it
     private Point pendingDown;
-    private bool gripMoving, gripUndoPushed, editGripUndo;
+    private bool gripMoving, gripUndoPushed;
     private Point gripAnchor;
-    private (double X, double Y) editOrigPos;
-    private const string TypingHint = "Type your text, then click Apply (or press Ctrl+Enter). Drag the Move handle to reposition it. Cancel puts everything back.";
+    private const string TypingHint = "Edit text in place. The source baseline, font proportions and character formatting are preserved; text is never auto-squeezed as you type. If it reaches another field, reduce the font size or move/resize it. Esc cancels.";
     private readonly PageEditObject defaults = new() { Kind = EditKind.Text, FontName = "Arial", FontSize = 14, ColorHex = "#000000" };
     private string lastUndoKey = ""; private long lastUndoTick;
     private bool updatingUi;
@@ -208,7 +210,7 @@ public sealed partial class EditorForm : Form
         var left = CentredRow(DockStyle.Left, prevBtn, pageLabel, nextBtn, bottomSep, zOut, zoomLabel, zIn, fit);
         var apply = new FlatButton { Text = "Save changes", Kind = BtnKind.Primary, Width = 150, Height = 36, Margin = new Padding(8, 0, 0, 0) };
         tips.SetToolTip(apply, "Keep all your edits on every page and close this window");
-        apply.Click += (_, _) => { CommitInlineEdit(); DialogResult = DialogResult.OK; Close(); };
+        apply.Click += (_, _) => { if (!ConfirmTextOverflow()) return; CommitInlineEdit(); DialogResult = DialogResult.OK; Close(); };
         var cancel = new FlatButton { Text = "Cancel", Kind = BtnKind.Secondary, Width = 96, Height = 36, Margin = Padding.Empty };
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         tips.SetToolTip(cancel, "Close this window without keeping your edits");
@@ -313,12 +315,12 @@ public sealed partial class EditorForm : Form
         // text
         textGroup = Group("Text");
         foreach (var f in new InstalledFontCollection().Families.Select(f => f.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)) fontBox.Items.Add(f);
-        fontBox.SelectedIndexChanged += (_, _) => { if (fontBox.SelectedItem is string n) ApplyText(o => { o.FontName = n; o.HScale = 1; }, "font"); };
+        fontBox.SelectedIndexChanged += (_, _) => { if (fontBox.SelectedItem is string n) ApplyText(o => o.FontName = n, "font"); };
         Row(textGroup, "Font", fontBox);
         sizeNum.ValueChanged += (_, _) => ApplyText(o => o.FontSize = (double)sizeNum.Value, "size");
         Row(textGroup, "Size (pt)", sizeNum);
-        boldBtn = StyleBtn("B", FontStyle.Bold, v => ApplyText(o => { o.Bold = v; o.HScale = 1; }, "bold"));
-        italicBtn = StyleBtn("I", FontStyle.Italic, v => ApplyText(o => { o.Italic = v; o.HScale = 1; }, "italic"));
+        boldBtn = StyleBtn("B", FontStyle.Bold, v => ApplyText(o => o.Bold = v, "bold"));
+        italicBtn = StyleBtn("I", FontStyle.Italic, v => ApplyText(o => o.Italic = v, "italic"));
         underBtn = StyleBtn("U", FontStyle.Underline, v => ApplyText(o => o.Underline = v, "underline"));
         var st = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
         st.Controls.AddRange(new Control[] { boldBtn, italicBtn, underBtn });
@@ -1019,10 +1021,16 @@ public sealed partial class EditorForm : Form
             var ax = leftSide ? r.Right : r.Left; var ay = topSide ? r.Bottom : r.Top;
             var newW = Math.Max(4f, Math.Abs(m.X - ax));
             var size = Math.Clamp(d.FontSize * newW / Math.Max(1f, r.Width), 4, 400);
-            var s = (float)(size / d.FontSize);
+            var s = (float)(size / Math.Max(4, d.FontSize));
             o.FontSize = Math.Round(size, 1);
+            // ResizeTo runs on every mouse-move; always scale from the snapshot at drag start, not from the previous
+            // mouse event, or repeatedly moving the handle would compound the text-size change.
+            for (var i = 0; i < Math.Min(o.TextStyles.Count, d.TextStyles.Count); i++)
+                o.TextStyles[i].FontSize = Math.Clamp(d.TextStyles[i].FontSize * s, 4, 400);
             var nw = r.Width * s; var nh = r.Height * s;
             o.X = leftSide ? ax - nw : ax; o.Y = topSide ? ay - nh : ay;
+            if (d.EditFitWidthPt > 0) o.EditFitWidthPt = d.EditFitWidthPt * s; // deliberate resize establishes a new target width
+            if (o.EditBaselineOffsetPt is not null) o.EditBaselineOffsetPt = EditPainter.FirstLineAscent(o);
             return;
         }
         float l = r.Left, t = r.Top, rt = r.Right, b = r.Bottom;
@@ -1074,7 +1082,13 @@ public sealed partial class EditorForm : Form
             return;
         }
         var wasDrag = drag != DragMode.None;
+        var wasTextResize = drag == DragMode.Resize && sel?.Kind == EditKind.Text;
         drag = DragMode.None; dragHandle = -1; dragOrig = null;
+        if (wasTextResize && sel != null)
+        {
+            if (sel.EditBaselineOffsetPt is not null) sel.EditBaselineOffsetPt = EditPainter.FirstLineAscent(sel);
+            ExpandOriginalCover(sel);
+        }
         if (wasDrag) { SyncProps(); UpdateHint(); canvas.Invalidate(); }
     }
 
@@ -1126,35 +1140,66 @@ public sealed partial class EditorForm : Form
         BeginInlineEdit(o, true, false);
     }
 
+    /// <summary>
+    /// Returns the editable horizontal space after an existing PDF text block. The next block on the same baseline
+    /// is treated as the neighboring field boundary; otherwise the right page margin is the limit. Unlike the old
+    /// original-glyph-width limit, this lets text grow at its real font size until it reaches available space.
+    /// </summary>
+    private double AvailableEditWidth(PdfTextBlock block)
+    {
+        var (pageWidth, _) = PageSize;
+        var startX = Math.Max(0, block.OriginX);
+        var originalRight = Math.Max(block.Box.Right, block.OriginX + Math.Max(0, block.Advance));
+        var boundary = pageWidth - 4;
+
+        if (blockCache.TryGetValue(pages[index].Id, out var blocks))
+        {
+            var baselineTolerance = Math.Max(2.5, block.FontSize * 0.38);
+            foreach (var other in blocks)
+            {
+                if (ReferenceEquals(block, other)) continue;
+                if (Math.Abs(other.Baseline - block.Baseline) > baselineTolerance) continue;
+                var otherLeft = Math.Max(other.Box.Left, other.OriginX);
+                // Only a block to the right can constrain this line. Keep a small safety gap to prevent collision.
+                if (otherLeft > originalRight + 0.5)
+                    boundary = Math.Min(boundary, otherLeft - Math.Max(2.0, block.FontSize * 0.22));
+            }
+        }
+
+        // Never give the field less room than the original visible text; that would make an untouched line change size.
+        var originalWidth = Math.Max(4, EditPainter.MeasureText(new PageEditObject
+        {
+            Kind = EditKind.Text, Text = block.Text, X = block.OriginX,
+            Y = block.Baseline - TextMetrics.Ascent(block.FontName, block.FontSize, block.Bold, block.Italic),
+            FontName = block.FontName, FontSize = block.FontSize, Bold = block.Bold, Italic = block.Italic,
+            Underline = block.TextStyles.Count == 1 && block.TextStyles[0].Start == 0 && block.TextStyles[0].Length >= block.Text.Length,
+            TextStyles = block.TextStyles.Select(r => r.Clone()).ToList()
+        }).Width);
+        var available = Math.Max(0, boundary - startX);
+        var pageAvailable = Math.Max(0, pageWidth - startX - 2);
+        // Do not make an imported line smaller to fit a narrow estimate: its untouched text must retain its exact
+        // source width. Only use the larger of this estimate and the original glyph width as the edit surface cap.
+        return Math.Max(originalWidth + 1.5, Math.Min(Math.Max(available, originalWidth + 1.5), Math.Max(pageAvailable, originalWidth + 1.5)));
+    }
+
     private void ConvertBlock(PdfTextBlock b, bool edit = true)
     {
         var before = SnapOf(index);
         PushUndo();
         var tag = BlockTag(b);
 
-        // The replacement sits on the ORIGINAL baseline and pen origin (not on the top of PDFium's char box), so a
-        // line keeps exactly its position. Line-box top = baseline - font ascent (same rule on canvas and in the export).
+        // Anchor the replacement to PDFium's original pen origin and baseline, including mixed-format text runs.
+        // The previous code used only the block's primary font ascent; a larger/bold/underlined run could therefore
+        // move the line vertically the first time TextChanged recalculated its metrics.
         var size = b.FontSize;
-        var asc = TextMetrics.Ascent(b.FontName, size, b.Bold, b.Italic);
         var desc = TextMetrics.Descent(b.FontName, size, b.Bold, b.Italic);
-        var top = b.Baseline - asc;
 
-        // Fit the mapped Windows font to the original line: PDF fonts and their Windows look-alikes can differ a little in
-        // advance width. Compare the span between the first and last glyph origins (independent of side bearings).
-        var hs = 1.0;
-        if (b.Text.Length >= 3 && b.Advance > 1)
-        {
-            var natural = TextMetrics.Advance(b.Text[..^1], b.FontName, size, b.Bold, b.Italic);
-            if (natural > 1)
-            {
-                var r = b.Advance / natural;
-                if (Math.Abs(r - 1) > 0.004 && r > 0.8 && r < 1.25) hs = Math.Round(r, 4);
-            }
-        }
-
-        // cover = the original glyph area (+ a hair), never smaller than the ascender/descender zone
+        // Cover the original glyphs before drawing the editable replacement. Keep this width at its source until a
+        // committed edit actually needs more space; ExpandOriginalCover extends it later without covering the next field.
         var cTop = Math.Min(b.Box.Top, (float)(b.Baseline - size * 0.8)) - 0.6;
-        var cBottom = Math.Max(b.Box.Bottom, (float)(b.Baseline + desc)) + 0.6;
+        var hasUnderlinedRuns = b.TextStyles.Any(r => r.Underline && r.Length > 0);
+        var bottomOffset = Math.Max(desc, hasUnderlinedRuns ? size * 0.30 : 0);
+        var cBottom = Math.Max(b.Box.Bottom, (float)(b.Baseline + bottomOffset)) + 0.6;
         var cover = new PageEditObject
         {
             Kind = EditKind.Rect, Tag = tag, X = b.Box.X - 1, Y = cTop, W = b.Box.Width + 2, H = cBottom - cTop,
@@ -1162,9 +1207,25 @@ public sealed partial class EditorForm : Form
         };
         var text = new PageEditObject
         {
-            Kind = EditKind.Text, Tag = tag, Text = b.Text, X = b.OriginX, Y = top, FontName = b.FontName, FontSize = size,
-            Bold = b.Bold, Italic = b.Italic, ColorHex = PageEditObject.Hex(b.Color), HScale = hs
+            Kind = EditKind.Text, Tag = tag, Text = b.Text, X = b.OriginX,
+            Y = b.Baseline - TextMetrics.Ascent(b.FontName, size, b.Bold, b.Italic), FontName = b.FontName, FontSize = size,
+            Bold = b.Bold, Italic = b.Italic, ColorHex = PageEditObject.Hex(b.Color), HScale = 1.0,
+            Underline = b.TextStyles.Count == 1 && b.TextStyles[0].Start == 0 && b.TextStyles[0].Length >= b.Text.Length,
+            TextStyles = b.TextStyles.Select(r => r.Clone()).ToList()
         };
+        var firstAscent = EditPainter.FirstLineAscent(text);
+        text.Y = b.Baseline - firstAscent;
+        text.EditBaselineOffsetPt = firstAscent;
+        // Calibrate once to the source glyph box so existing text doesn't jump horizontally because a substitute font
+        // has slightly different metrics. Keep this scale fixed while typing: new characters are never auto-squeezed.
+        var naturalWidth = Math.Max(1.0, EditPainter.MeasureText(text).Width);
+        var sourceWidth = Math.Max(1.0, b.Box.Width);
+        // Embedded/subset PDF fonts can differ substantially from the installed replacement font. Calibrate across
+        // the full range supported by RichEdit and the PDF painter; a tighter clamp made some originals jump in width.
+        var sourceScale = Math.Clamp(sourceWidth / naturalWidth, 0.21, 4.99);
+        text.HScale = sourceScale;
+        text.EditFitMaxScale = sourceScale;
+        text.EditFitWidthPt = AvailableEditWidth(b);
         Objs.Add(cover); Objs.Add(text);
         sel = text; hoverBlock = null;
         SyncProps();
@@ -1204,7 +1265,13 @@ public sealed partial class EditorForm : Form
     private void BeginInlineEdit(PageEditObject o, bool isNew, bool fromConversion)
     {
         CommitInlineEdit();
+        // Capture object state plus undo/redo history at the start of the inline session. Cancel must discard
+        // every mutation made while editing (typing, formatting, or dragging), without leaving ghost undo entries
+        // or losing the redo history that existed before the session.
+        editUndoSnapshot = undo.ToList();
+        editRedoSnapshot = redo.ToList();
         editObj = o; editIsNew = isNew; sel = o;
+        editBeforeSnapshot = !isNew && !fromConversion ? Objs.Select(item => item.Clone()).ToList() : null;
         if (!fromConversion) { pendingConv = null; }
         var box = new RichTextBox
         {
@@ -1213,7 +1280,7 @@ public sealed partial class EditorForm : Form
             BackColor = EditBoxBack(o), ForeColor = EditPainter.Parse(o.ColorHex, Color.Black),
             Text = (o.Text ?? "").Replace("\n", "\r\n")
         };
-        editBox = box; editOrigText = o.Text ?? "";
+        editBox = box;
         var frame = new EditFrame();
         frame.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) GripDown(); };
         frame.MouseMove += (_, _) => GripMove();
@@ -1224,15 +1291,24 @@ public sealed partial class EditorForm : Form
         canvas.Controls.Add(box);
         ZeroMargins(box);
         LoadRichTextStyles(box, o);
+        ApplyHorizontalScaleToEditBox(box, o.HScale);
         ShowEditBar();
-        hint.Text = TypingHint; editOrigPos = (o.X, o.Y); editGripUndo = false;
+        hint.Text = TypingHint;
         StyleEditBox();
+        UpdateEditOverflowHint();
         box.TextChanged += (_, _) =>
         {
             if (editBox != box || editObj == null) return;
             editObj.Text = box.Text.Replace("\r\n", "\n").Replace("\r", "");
+            MaintainOriginalBaseline(editObj);
+            RestoreSourceHorizontalScale(editObj);
+            // RichEdit may reset CHARFORMAT2.wScale for characters inserted at the caret. Reapply the same fixed
+            // source scale after every keystroke so the live text width matches the canvas and saved PDF instead of
+            // jumping horizontally when inline editing is committed.
+            ApplyHorizontalScaleToEditBox(box, editObj.HScale);
             dirty = true;
-            ResizeEditBox(); canvas.Invalidate();
+            UpdateEditOverflowHint();
+            PositionEditBox(); canvas.Invalidate();
         };
         box.SelectionChanged += (_, _) =>
         {
@@ -1241,7 +1317,8 @@ public sealed partial class EditorForm : Form
         };
         box.KeyDown += (_, e) =>
         {
-            if (e.KeyCode == Keys.Escape || (e.Control && e.KeyCode == Keys.Enter)) { e.SuppressKeyPress = true; e.Handled = true; CommitInlineEdit(); }
+            if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; e.Handled = true; CancelInlineEdit(); }
+            else if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; e.Handled = true; if (ConfirmTextOverflow()) CommitInlineEdit(); }
         };
         box.LostFocus += (_, _) => BeginInvoke(new Action(() =>
         {
@@ -1348,8 +1425,58 @@ public sealed partial class EditorForm : Form
         box.Select(Math.Clamp(savedStart, 0, box.TextLength), Math.Min(savedLen, Math.Max(0, box.TextLength - savedStart)));
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct CharFormat2
+    {
+        public uint cbSize;
+        public uint dwMask;
+        public uint dwEffects;
+        public int yHeight;
+        public int yOffset;
+        public int crTextColor;
+        public byte bCharSet;
+        public byte bPitchAndFamily;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szFaceName;
+        public ushort wWeight;
+        public short sSpacing;
+        public int crBackColor;
+        public uint lcid;
+        public uint dwReserved;
+        public short sStyle;
+        public ushort wKerning;
+        public byte bUnderlineType;
+        public byte bAnimation;
+        public byte bRevAuthor;
+        public byte bReserved1;
+        public ushort wScale;
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref CharFormat2 lParam);
+
+    /// <summary>Applies the calibrated PDF glyph width (20–500%) to the live RichEdit control, so typed text does not jump when editing ends.</summary>
+    private static void ApplyHorizontalScaleToEditBox(RichTextBox box, double scale)
+    {
+        if (scale is < 0.20 or > 5.00 || box.TextLength == 0) return;
+        const int EM_SETCHARFORMAT = 0x0444;
+        const int SCF_SELECTION = 0x0001;
+        const uint CFM_SCALE = 0x40000000;
+        var start = box.SelectionStart;
+        var length = box.SelectionLength;
+        box.SelectAll();
+        var format = new CharFormat2
+        {
+            cbSize = (uint)Marshal.SizeOf<CharFormat2>(),
+            dwMask = CFM_SCALE,
+            wScale = (ushort)Math.Clamp((int)Math.Round(scale * 100.0), 20, 500),
+            szFaceName = string.Empty
+        };
+        SendMessage(box.Handle, EM_SETCHARFORMAT, (IntPtr)SCF_SELECTION, ref format);
+        box.Select(Math.Clamp(start, 0, box.TextLength), Math.Clamp(length, 0, Math.Max(0, box.TextLength - start)));
+    }
 
     /// <summary>Removes the edit control's built-in left/right padding so typed text starts exactly where the PDF text does.</summary>
     private static void ZeroMargins(RichTextBox t)
@@ -1417,8 +1544,14 @@ public sealed partial class EditorForm : Form
             if (underline != null) o.Underline = underline.Value;
             if (color != null) o.ColorHex = PageEditObject.Hex(color.Value);
         }
+        MaintainOriginalBaseline(o);
+        RestoreSourceHorizontalScale(o);
+        ApplyHorizontalScaleToEditBox(box, o.HScale);
         CaptureRichTextStyles();
-        dirty = true; ResizeEditBox(); canvas.Invalidate();
+        MaintainOriginalBaseline(o);
+        RestoreSourceHorizontalScale(o);
+        ExpandOriginalCover(o);
+        dirty = true; UpdateEditOverflowHint(); PositionEditBox(); canvas.Invalidate();
     }
 
     private void PositionEditBox()
@@ -1429,13 +1562,96 @@ public sealed partial class EditorForm : Form
         ResizeEditBox();
     }
 
+    private void UpdateEditOverflowHint()
+    {
+        if (editObj == null || editBox == null || editObj.Kind != EditKind.Text || editObj.EditFitWidthPt <= 0)
+            return;
+        var visibleWidth = EditPainter.MeasureText(editObj).Width;
+        var overflow = visibleWidth - editObj.EditFitWidthPt;
+        hint.Text = overflow > 1.5
+            ? $"Possible overlap: this replacement is {overflow:0.#} pt wider than the available gap. Its font and baseline are preserved. Reduce font size or move/resize it before applying."
+            : TypingHint;
+    }
+
     private void ResizeEditBox()
     {
         if (editBox == null || editObj == null) return;
+        // Measure with the same fixed source scale applied to RichEdit (CHARFORMAT2.wScale) and final PDF drawing.
         var m = EditPainter.MeasureText(editObj);
-        editBox.Size = new Size(Math.Max(Theme.S(70), (int)(m.Width * zoom) + 28), Math.Max(Theme.S(22), (int)(m.Height * zoom) + Theme.S(4)));
+        var desiredWidth = (int)Math.Ceiling(m.Width * zoom) + Theme.S(12);
+        // Keep every typed character visible while editing. The frame may temporarily extend across a neighbor, but its
+        // width is capped at the page edge; the status hint calls out when the committed text would exceed its field.
+        var pageRight = (int)Math.Round(PageSize.W * zoom + Pad);
+        var remainingPageWidth = Math.Max(Theme.S(70), pageRight - editBox.Left - Theme.S(6));
+        var needsHorizontalScroll = desiredWidth > remainingPageWidth;
+        desiredWidth = Math.Min(desiredWidth, remainingPageWidth);
+        var wantedScroll = needsHorizontalScroll ? RichTextBoxScrollBars.Horizontal : RichTextBoxScrollBars.None;
+        if (editBox.ScrollBars != wantedScroll) editBox.ScrollBars = wantedScroll;
+        editBox.Size = new Size(Math.Max(Theme.S(70), desiredWidth), Math.Max(Theme.S(22), (int)(m.Height * zoom) + Theme.S(4)));
         PositionEditFrame();
         PositionEditBar();
+    }
+
+    /// <summary>Keeps an existing text line's baseline fixed when its font metrics change.</summary>
+    private static void MaintainOriginalBaseline(PageEditObject o)
+    {
+        if (o.Kind != EditKind.Text || o.EditBaselineOffsetPt is not double oldOffset || oldOffset <= 0) return;
+        // Y is the top of the line box. Keep the current baseline fixed (including any previous vertical move) when
+        // a font/size or per-character style changes the ascent; then store the new offset for future moves/edits.
+        var baseline = o.Y + oldOffset;
+        var newOffset = EditPainter.FirstLineAscent(o);
+        if (double.IsNaN(newOffset) || double.IsInfinity(newOffset) || newOffset <= 0) return;
+        o.Y = baseline - newOffset;
+        o.EditBaselineOffsetPt = newOffset;
+    }
+
+    private void ExpandOriginalCover(PageEditObject o)
+    {
+        if (o.Kind != EditKind.Text || string.IsNullOrEmpty(o.Tag)) return;
+        var cover = Objs.FirstOrDefault(c => c.Kind == EditKind.Rect && c.Tag == o.Tag);
+        if (cover == null) return;
+        var top = o.Y - 0.6;
+        var baseline = o.Y + EditPainter.FirstLineAscent(o);
+        var bottom = baseline + EditPainter.FirstLineDescent(o) + 0.6;
+        var oldBottom = cover.Y + cover.H;
+        if (top < cover.Y) { cover.H = oldBottom - top; cover.Y = top; }
+        oldBottom = cover.Y + cover.H;
+        if (bottom > oldBottom) cover.H = bottom - cover.Y;
+
+        // If a replacement is longer, extend the paper-coloured cover behind it so the original glyphs do not show
+        // through the new text. Stop at the available field boundary; never white-out the neighbouring field.
+        var currentRight = cover.X + cover.W;
+        var textRight = o.X + EditPainter.MeasureText(o).Width + 1.2;
+        var fieldRight = o.EditFitWidthPt > 0 ? o.X + o.EditFitWidthPt + 0.6 : double.PositiveInfinity;
+        var wantedRight = Math.Min(textRight, fieldRight);
+        if (wantedRight > currentRight) cover.W = wantedRight - cover.X;
+    }
+
+    private static void UpdateTextStylesForObjectProperty(PageEditObject o, string key)
+    {
+        if (o.TextStyles.Count == 0) return;
+        foreach (var run in o.TextStyles)
+        {
+            switch (key)
+            {
+                case "font": run.FontName = o.FontName; break;
+                case "size": run.FontSize = o.FontSize; break;
+                case "bold": run.Bold = o.Bold; break;
+                case "italic": run.Italic = o.Italic; break;
+                case "underline": run.Underline = o.Underline; break;
+                case "tcolor": run.ColorHex = o.ColorHex; break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Preserve the one-time scale calibrated to the source text bounds. The scale is not recalculated as the user
+    /// types, so existing text stays aligned while new characters keep the same glyph proportions instead of being squeezed.
+    /// </summary>
+    private static void RestoreSourceHorizontalScale(PageEditObject o)
+    {
+        if (o.Kind != EditKind.Text || o.EditFitWidthPt <= 0) return;
+        if (o.EditFitMaxScale is > 0.2 and < 5) o.HScale = o.EditFitMaxScale;
     }
 
     /// <summary>Keeps the visible frame exactly around the text box (the frame is a ring, so the box shows through its middle).</summary>
@@ -1446,12 +1662,67 @@ public sealed partial class EditorForm : Form
         editFrame.Bounds = new Rectangle(editBox.Left - b, editBox.Top - b, editBox.Width + 2 * b, editBox.Height + 2 * b);
     }
 
+    private bool ConfirmTextOverflow()
+    {
+        if (editObj == null || editBox == null || editObj.Kind != EditKind.Text || editObj.EditFitWidthPt <= 0)
+            return true;
+        var visibleWidth = EditPainter.MeasureText(editObj).Width;
+        var overflow = visibleWidth - editObj.EditFitWidthPt;
+        if (overflow <= 2.0) return true;
+        var message = $"This text is about {overflow:0.#} pt wider than the available gap and may overlap the next field. PDF Studio will preserve its font size and baseline instead of squeezing it.\n\nChoose No to keep editing and reduce the font size or reposition the text. Choose Yes to keep the edit anyway.";
+        return MessageBox.Show(this, message, "Text may overlap another field", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+    }
+
+    private void CancelInlineEdit()
+    {
+        if (editBox == null || editObj == null) return;
+        var box = editBox;
+        var obj = editObj;
+        // Cancelling a converted PDF text block restores the original page objects; other edits restore their exact snapshot.
+        if (pendingConv is { } pending)
+        {
+            Objs.Clear(); Objs.AddRange(pending.Before.Select(item => item.Clone()));
+            sel = null;
+        }
+        else if (editIsNew)
+        {
+            Objs.RemoveAll(item => item.Id == obj.Id);
+            sel = null;
+        }
+        else if (editBeforeSnapshot != null)
+        {
+            Objs.Clear(); Objs.AddRange(editBeforeSnapshot.Select(item => item.Clone()));
+            sel = Objs.FirstOrDefault(item => item.Id == obj.Id);
+        }
+
+        // Restore history exactly as it stood on entering the editor. A newly-added text object or a converted
+        // PDF text block has one pre-existing creation/conversion undo record which must also be discarded.
+        var undoBefore = editUndoSnapshot?.ToList() ?? undo.ToList();
+        var redoBefore = editRedoSnapshot?.ToList() ?? redo.ToList();
+        if ((pendingConv != null || editIsNew) && undoBefore.Count > 0)
+            undoBefore.RemoveAt(undoBefore.Count - 1);
+        undo.Clear(); undo.AddRange(undoBefore);
+        redo.Clear(); redo.AddRange(redoBefore);
+        UpdateUndoButtons();
+
+        editBox = null; editObj = null; editBeforeSnapshot = null;
+        editUndoSnapshot = null; editRedoSnapshot = null; pendingConv = null; convDirty = false;
+        canvas.Controls.Remove(box); box.Dispose();
+        if (editFrame != null) { var frame = editFrame; editFrame = null; canvas.Controls.Remove(frame); frame.Dispose(); }
+        HideEditBar(); SyncProps(); UpdateHint(); canvas.Invalidate(); canvas.Focus();
+    }
+
     private void CommitInlineEdit()
     {
         if (editBox == null || editObj == null) return;
         CaptureRichTextStyles();
         var box = editBox; var o = editObj; var isNew = editIsNew;
-        editBox = null; editObj = null;
+        MaintainOriginalBaseline(o);
+        RestoreSourceHorizontalScale(o); // preserve the source horizontal scale after capturing the final per-character styles
+        ExpandOriginalCover(o);
+        editBox = null; editObj = null; editBeforeSnapshot = null;
+        editUndoSnapshot = null; editRedoSnapshot = null;
         canvas.Controls.Remove(box); box.Dispose();
         if (editFrame != null) { var fr = editFrame; editFrame = null; canvas.Controls.Remove(fr); fr.Dispose(); }
         HideEditBar();
@@ -1488,7 +1759,7 @@ public sealed partial class EditorForm : Form
         var t = TextTarget; if (t == null) return;
         if (t != defaults) { PushUndoCoalesced(key); convDirty = true; }
         change(t);
-        if (t == editObj && editBox != null && editBox.SelectionLength > 0 && (key is "font" or "size" or "bold" or "italic" or "underline" or "tcolor"))
+        if (t == editObj && editBox != null && (key is "font" or "size" or "bold" or "italic" or "underline" or "tcolor"))
         {
             ApplySelectionFont(
                 fontName: key == "font" ? t.FontName : null,
@@ -1501,9 +1772,21 @@ public sealed partial class EditorForm : Form
         else if (t == editObj)
         {
             CaptureRichTextStyles();
+            MaintainOriginalBaseline(t);
+            RestoreSourceHorizontalScale(t);
+            ExpandOriginalCover(t);
+            if (editBox != null) PositionEditBox();
+        }
+        else if (t != defaults)
+        {
+            UpdateTextStylesForObjectProperty(t, key);
+            MaintainOriginalBaseline(t);
+            RestoreSourceHorizontalScale(t);
+            ExpandOriginalCover(t);
         }
         if (t != defaults) CopyTextDefaults(t);
         if (t != defaults) SyncPosOnly();
+        UpdateEditOverflowHint();
         canvas.Invalidate();
     }
 

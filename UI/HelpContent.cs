@@ -34,10 +34,10 @@ public static class HelpContent
         new("\uE710", "Adding files",
 @"## Supported files
 - PDF documents (any number of files; every page is added).
-- Pictures: PNG, JPG, BMP, GIF, TIFF (multi-page TIFFs too) and WebP. A small dialog lets you choose the page size and fit.
+- Pictures: PNG, JPG, BMP, GIF, TIFF (multi-page TIFFs too) and WebP. Added pictures use A4 pages with automatic orientation and contain-fit by default; use Page size to change the document layout.
 
 ## Ways to add
-- Add files button: Add PDFs, Add images. Added images become pages in the workspace; no PDF is saved until you export. Convert > Images → PDF saves a PDF file directly.
+- Add files menu or Ctrl+O: choose PDFs and pictures together, or pick only one type. The trailing Add PDF / image tile opens the same combined picker. Pictures become pages in the workspace; no output PDF is saved until you export. Convert > Images → PDF saves a PDF file directly.
 - Drag files from Windows Explorer onto the window to add them at the end.
 - Drag files between two thumbnails to insert them exactly there (an insertion line shows where).
 - More tools > Insert PDF after selection puts a whole PDF right after the selected page.
@@ -190,12 +190,12 @@ Files are named Part_01.pdf, Part_02.pdf and so on (you can change the base name
 ## PDF to Word
 Converts the whole workspace, only the selected pages, or any PDF file to a Word (.docx) document. It is built into PDF Studio — no Word or any other program is needed to convert.
 
-Each PDF page becomes one Word page of the same size with no margins. Text is real, editable Word text placed on its original position, font, size and colour. Lines, table borders, shapes, logos and photos are kept as a picture behind the text, so the page looks the same as the PDF.
+Each PDF page becomes a Word section of the same size with no margins. Extracted text is real, editable Word paragraphs/runs; tables are real Word tables. Hidden OCR text is imported when available, and bundled English OCR attempts to recover text from meaningful embedded image regions, including images nested inside Form XObjects. A page-level OCR fallback runs on the remaining graphics after vector text is removed. Paragraph-like raster panels become editable Word paragraphs where OCR can read them; uncertain text-like regions are omitted instead of becoming draggable pictures. Only small bounded photo/logo candidates may remain as separate pictures, while full-page artwork is an optional appearance-first setting.
 
-- Graphics quality: Standard (150 dpi), High (220 dpi) or Draft (96 dpi). It only affects the picture behind the text.
-- Text is placed line by line, so editing a line does not re-flow the paragraph around it. Type over a line or delete it and retype it.
+- Graphics quality: Standard (150 dpi), High (220 dpi) or Draft (96 dpi). It affects preserved pictures. Full-page artwork is opt-in; normal mode prioritizes editable text.
+- Extracted lines are grouped into ordinary Word paragraphs where reading order is clear. Font substitutions and paragraph reflow can change exact line breaks.
 - Text that is rotated or slanted stays in the picture (it looks right but is not editable).
-- Scanned PDFs (pictures of text) have no real text and cannot be turned into editable text; they come out as page images.
+- English raster text can be converted to editable paragraphs through the bundled OCR engine. OCR may make mistakes and cannot reliably reconstruct complex layouts; if a text-like region cannot be read, the editable-first converter omits it rather than making the paragraph a floating picture. Enable full-page artwork only when visual appearance matters more than editability.
 
 ## PDF to images
 - Formats: PNG, JPEG, WebP, BMP, TIFF, GIF.
@@ -222,7 +222,7 @@ Each PDF page becomes one Word page of the same size with no margins. Text is re
 
         new("\uE765", "Keyboard & mouse shortcuts",
 @"## Files & export
-|Ctrl+O|Add PDF files
+|Ctrl+O|Add PDF or image files
 |Ctrl+S|Export PDF
 |Ctrl+Shift+S|Export selected pages
 |Ctrl+P|Open the result in your PDF viewer

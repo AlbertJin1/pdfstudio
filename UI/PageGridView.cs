@@ -53,11 +53,11 @@ public sealed class PageGridView : Control
     public event Action<PageItem>? QuickDelete;
     public event Action<int>? ZoomWheel;
     public event Action<Point>? ContextRequested;
-    /// <summary>The "Add PDF" placeholder tile at the end of the grid was clicked.</summary>
-    public event Action? AddPdfRequested;
+    /// <summary>The "Add PDF / image" placeholder tile at the end of the grid was clicked.</summary>
+    public event Action? AddFilesRequested;
 
     private bool addHover, addPressed;
-    /// <summary>Number of grid slots: every page plus the trailing "Add PDF" placeholder.</summary>
+    /// <summary>Number of grid slots: every page plus the trailing add-files placeholder.</summary>
     private int Slots => Pages.Count == 0 ? 0 : Pages.Count + 1;
 
     public int TileWidth
@@ -394,7 +394,7 @@ public sealed class PageGridView : Control
 
     private bool HitAddTile(Point p) => Pages.Count > 0 && AddTileRect().Contains(p);
 
-    /// <summary>Dashed "page placeholder" at the end of the list that opens the Add PDF dialog.</summary>
+    /// <summary>Dashed page placeholder at the end of the list that opens the PDF/image picker.</summary>
     private void DrawAddTile(Graphics g, Rectangle cell)
     {
         var hot = addHover && mode == Mode.None;
@@ -423,10 +423,10 @@ public sealed class PageGridView : Control
         }
 
         var capTop = box.Bottom + Theme.S(4);
-        TextRenderer.DrawText(g, "Add PDF", Theme.Ui(10f, FontStyle.Bold),
+        TextRenderer.DrawText(g, "Add PDF / image", Theme.Ui(10f, FontStyle.Bold),
             new Rectangle(cell.X + cellPad, capTop, boxW, Theme.S(18)), hot ? Theme.Accent : Theme.Text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-        TextRenderer.DrawText(g, "Click or drop files here", Theme.Ui(8f),
+        TextRenderer.DrawText(g, "Click or drop PDFs & images", Theme.Ui(8f),
             new Rectangle(cell.X + cellPad, capTop + Theme.S(18), boxW, Theme.S(16)), Theme.Muted,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
     }
@@ -683,7 +683,7 @@ public sealed class PageGridView : Control
         if (addPressed)
         {
             addPressed = false;
-            if (HitAddTile(e.Location)) AddPdfRequested?.Invoke();
+            if (HitAddTile(e.Location)) AddFilesRequested?.Invoke();
             return;
         }
         var was = mode;
