@@ -13,8 +13,9 @@ public abstract class ModernDialog : Form
     {
         Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, BackColor = Color.Transparent
     };
-    protected readonly FlatButton OkBtn = new() { Kind = BtnKind.Primary, Width = 120, Height = 36, Margin = new Padding(8, 0, 0, 0) };
-    protected readonly FlatButton CancelBtn = new() { Text = "Cancel", Kind = BtnKind.Secondary, Width = 96, Height = 36, DialogResult = DialogResult.Cancel };
+    protected readonly FlatButton OkBtn = new() { Kind = BtnKind.Primary, Width = 120, Height = 36, Margin = Padding.Empty };
+    // both buttons: identical height and zero vertical margin so they sit on one line; the gap between them is Cancel's right margin
+    protected readonly FlatButton CancelBtn = new() { Text = "Cancel", Kind = BtnKind.Secondary, Width = 96, Height = 36, DialogResult = DialogResult.Cancel, Margin = new Padding(0, 0, 10, 0) };
     private readonly Surface header;
     private readonly Surface footer;
 
@@ -45,13 +46,13 @@ public abstract class ModernDialog : Form
         header = new Surface { Dock = DockStyle.Top, Height = string.IsNullOrEmpty(subtitle) ? 56 : 80, Padding = new Padding(24, 18, 24, 4) };
         header.UseRole(() => Theme.Surface);
         var sub = new Txt(subtitle, 9.5f, FontStyle.Regular, true) { Dock = DockStyle.Top, Height = 24 };
-        var head = new Txt(title, 15f, FontStyle.Bold) { Dock = DockStyle.Top, Height = 30 };
+        var head = new Txt(title, 15f, FontStyle.Bold) { Dock = DockStyle.Top, Height = 34 };
         if (!string.IsNullOrEmpty(subtitle)) header.Controls.Add(sub);
         header.Controls.Add(head);
 
-        footer = new Surface { Dock = DockStyle.Bottom, Height = 66, Padding = new Padding(24, 14, 24, 14), BorderTop = true };
+        footer = new Surface { Dock = DockStyle.Bottom, Height = 66, Padding = new Padding(24, 15, 24, 15), BorderTop = true };
         footer.UseRole(() => Theme.Surface);
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Color.Transparent };
+        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Color.Transparent, Padding = Padding.Empty, Margin = Padding.Empty };
         OkBtn.Text = okText;
         OkBtn.Click += (_, _) =>
         {
@@ -59,6 +60,7 @@ public abstract class ModernDialog : Form
             DialogResult = DialogResult.OK; Close();
         };
         flow.Controls.Add(OkBtn); flow.Controls.Add(CancelBtn);
+        CancelBtn.TabIndex = 0; OkBtn.TabIndex = 1;      // keyboard order follows the screen: Cancel, then the primary action
         footer.Controls.Add(flow);
 
         AcceptButton = OkBtn; CancelButton = CancelBtn;
@@ -66,6 +68,9 @@ public abstract class ModernDialog : Form
     }
 
     protected virtual bool ValidateInput(out string error) { error = ""; return true; }
+
+    /// <summary>Puts a control (usually a short summary label) at the left end of the footer, opposite the buttons.</summary>
+    protected void AddFooterNote(Control note) { note.Dock = DockStyle.Left; footer.Controls.Add(note); }
 
     protected override void OnLoad(EventArgs e)
     {

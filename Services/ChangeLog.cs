@@ -21,6 +21,21 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.8.14", new DateOnly(2026, 10, 15), "Rebuilt the Export PDF window with segmented tabs, one alignment grid, themed fields and toggle switches.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Changed, new[]
+            {
+                "Export PDF window rebuilt: one segmented tab strip (keyboard operable, with a dot on tabs that have settings switched on) and one alignment grid so every label, field and button lines up.",
+                "Text, password and number boxes share one themed field; numbers show their unit and have stepper arrows, hold-to-repeat, mouse wheel and Up/Down keys; password boxes can be revealed.",
+                "Check boxes became toggle switches; dependent settings dim until switched on, and the Compress tab shows only the field for the chosen method, with quick-pick buttons.",
+                "The footer summarises everything that will be applied. Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PageDown / Ctrl+PageUp switch tabs; Tab follows the screen order."
+            }),
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Cancel and Export buttons in every dialog now sit on the same line with an even gap (their margins differed).",
+                "A missing watermark text now jumps to the Watermark tab and focuses the field."
+            })
+        }),
         new("2.8.13", new DateOnly(2026, 10, 15), "Resolve ambiguous ImageFormat references in PDF-to-Word raster processing.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Fixed, new[]

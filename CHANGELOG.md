@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.8.14] - 2026-10-15
+
+_Rebuild the Export PDF window: segmented tabs, one alignment grid, themed fields and toggle switches, and a live summary._
+
+### Changed
+- Export PDF window rebuilt. The tab strip is now one segmented control (equal-width tabs, keyboard operable) with a dot on every tab that has settings switched on.
+- Every page uses one grid: a fixed label column and fields that share the same left edge, width and height, with rows centred vertically. Alignment no longer depends on auto-sized table rows.
+- Text, password and number boxes use the same rounded themed field; numbers have a unit (%, MB, pt, °), stepper arrows, hold-to-repeat, mouse wheel and Up/Down keys. Password boxes have a show/hide eye.
+- Check boxes became toggle switches. Dependent settings (page-number position, watermark text, permissions) dim until their switch is on, and the Compress tab only shows the field for the chosen method (preset, percentage or target size) with quick-pick buttons (25/50/75 %, 1/2/5/10 MB).
+- The footer now summarises what will be applied (page size, numbers, watermark, compression, password).
+- Keyboard: Tab follows the screen order (tabs, fields of the visible page, Cancel, Export); Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PageDown / Ctrl+PageUp switch tabs.
+
+### Fixed
+- Cancel and Export buttons (in every dialog) now sit on the same line with an even gap; Cancel was a few pixels lower because the two buttons had different margins.
+- The dialog title no longer touches its subtitle.
+- A missing watermark text now jumps to the Watermark tab and focuses the field.
+
 ## [2.8.13] - 2026-10-15
 
 _Resolve ambiguous ImageFormat enum references in PDF-to-Word raster processing._

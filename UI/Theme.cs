@@ -55,6 +55,7 @@ public static class Theme
     /// <summary>Applies theme colours to standard (native) controls, recursively. Self-themed controls are skipped.</summary>
     public static void Apply(Control root)
     {
+        if (root is ISelfThemed) return;   // paints (and themes) itself and its inner controls
         switch (root)
         {
             case FlatButton or global::PdfStudio.UI.Surface or Txt or PageGridView: break;
