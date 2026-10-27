@@ -100,11 +100,52 @@ public static class UpdateService
 
     private static string? ExePath => Environment.ProcessPath;
     private static string NewPath => ExePath + ".new";
-    /// <summary>Verified replacement executable staged beside the running executable.</summary>
+    /// <summary>Verified replacement executable staged beside the running executable for legacy same-format updates.</summary>
     public static string StagedPath => NewPath;
     private static string OldPath => ExePath + ".old";
     private static string ZipTempPath => ExePath + ".new.zip";
     private static string DeltaTempPath => ExePath + ".new.delta";
+    private static string MigrationRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PdfStudio", "migration");
+    private static string PortableRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PdfStudio", "Version3");
+    private static string PortableFallbackPath => Path.Combine(PortableRoot, "PdfStudio.exe");
+    private static string MigrationMarkerPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PdfStudio", "migration-v3-portable-launched.txt");
+
+    /// <summary>
+    /// Version 3 is an Electron portable launcher. It can replace the legacy EXE in a writable portable folder;
+    /// protected legacy folders fall back to a user-local copy without running an installer or requiring elevation.
+    /// </summary>
+    public static bool IsPlatformMigration(UpdateInfo update) => IsPlatformMigrationVersion(update.Version);
+
+    private static bool IsPlatformMigrationVersion(string targetVersion)
+    {
+        return TryParse(CurrentVersion, out var current) && TryParse(targetVersion, out var target)
+            && current.Major < 3 && target.Major >= 3;
+    }
+
+    public static bool IsPlatformMigrationInstalled => File.Exists(MigrationMarkerPath) && File.Exists(PortableFallbackPath);
+
+    /// <summary>Download path for the checksum-verified standalone Version 3 portable EXE.</summary>
+    public static string MigrationPortablePath(string version)
+    {
+        var safeVersion = string.Concat((version ?? "3.0.0").Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_'));
+        return Path.Combine(MigrationRoot, $"PDF-Studio-{safeVersion}-Portable.exe");
+    }
+
+    /// <summary>Called at startup by patched legacy C# builds after a protected-folder migration. Keeps old shortcuts useful.</summary>
+    public static bool TryLaunchPortableMigration()
+    {
+        if (!IsPlatformMigrationInstalled || !TryParse(CurrentVersion, out var current) || current.Major >= 3) return false;
+        try
+        {
+            var started = Process.Start(new ProcessStartInfo(PortableFallbackPath)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = PortableRoot
+            });
+            return started is not null;
+        }
+        catch { return false; }
+    }
 
     private static bool IsDevHost(string? exe) =>
         string.IsNullOrEmpty(exe) || string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase);
@@ -207,6 +248,9 @@ public static class UpdateService
             var version = latest.GetProperty("version").GetString() ?? "";
             if (!TryParse(version, out var newest)) return new UpdateCheck(null, $"The update server sent an unrecognised version ('{version}').");
             if (!TryParse(CurrentVersion, out var current) || newest <= current) return new UpdateCheck(null, null);
+            // A successful protected-folder fallback writes this marker. Avoid repeatedly offering the same migration
+            // while the user-local portable copy exists; when no marker/copy exists, allow another attempt.
+            if (current.Major < 3 && newest.Major >= 3 && IsPlatformMigrationInstalled) return new UpdateCheck(null, null);
             var clean = $"{newest.Major}.{newest.Minor}.{newest.Build}";
 
             string? zipUrl = null; long zipSize = 0; string? zipSha = null;
@@ -245,6 +289,54 @@ public static class UpdateService
 
     public static async Task<string> DownloadAsync(UpdateInfo update, IProgress<UpdateProgress>? progress, CancellationToken ct)
     {
+        if (IsPlatformMigration(update))
+        {
+            // A v2 -> v3 migration must produce the real standalone Electron portable launcher, not an installer.
+            // Prefer the Monitor's checksum-verified ZIP to reduce transfer size, extract only PdfStudio.exe, then
+            // verify the final EXE against the authoritative release checksum before handing it to Windows.
+            // Delta reuse is intentionally not attempted across the C# -> Electron architecture boundary.
+            var portablePath = MigrationPortablePath(update.Version);
+            Directory.CreateDirectory(Path.GetDirectoryName(portablePath)!);
+            TryDelete(portablePath);
+            try
+            {
+                if (update.Compressed)
+                {
+                    try
+                    {
+                        progress?.Report(new UpdateProgress(0, 0, update.ZipSize, UpdatePhase.Downloading,
+                            "Downloading the compressed PDF Studio 3 portable app…"));
+                        await DownloadZipAsync(update, portablePath, progress, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { CleanupUpdateTemps(); throw; }
+                    catch
+                    {
+                        TryDelete(portablePath); TryDelete(ZipTempPath);
+                        progress?.Report(new UpdateProgress(0, 0, update.Size, UpdatePhase.Fallback,
+                            "The compressed migration package could not be used. Downloading the verified portable app…"));
+                        await DownloadFileAsync(update.DownloadUrl, portablePath, update.Size, progress, 0.0, 1.0, ct).ConfigureAwait(false);
+                        await VerifyExeAsync(portablePath, update, ct).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    progress?.Report(new UpdateProgress(0, 0, update.Size, UpdatePhase.Downloading,
+                        "Downloading the portable PDF Studio 3 app…"));
+                    await DownloadFileAsync(update.DownloadUrl, portablePath, update.Size, progress, 0.0, 1.0, ct).ConfigureAwait(false);
+                    await VerifyExeAsync(portablePath, update, ct).ConfigureAwait(false);
+                }
+                progress?.Report(new UpdateProgress(1.0, update.Size, update.Size, UpdatePhase.Verifying,
+                    "The PDF Studio 3 portable app is verified."));
+                return portablePath;
+            }
+            catch
+            {
+                TryDelete(portablePath);
+                TryDelete(ZipTempPath);
+                throw;
+            }
+        }
+
         if (!CanSelfUpdate(out var reason)) throw new InvalidOperationException(reason);
         var target = NewPath;
 
@@ -685,6 +777,24 @@ public static class UpdateService
         }
     }
 
+    private static void VerifyPortableCopy(string path, UpdateInfo update)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists || (update.Size > 0 && info.Length != update.Size))
+            throw new IOException("The copied Version 3 portable executable has an unexpected size.");
+        using var stream = File.OpenRead(path);
+        var header = new byte[2];
+        if (stream.Read(header, 0, header.Length) != header.Length || header[0] != (byte)'M' || header[1] != (byte)'Z')
+            throw new IOException("The copied Version 3 file is not a valid Windows executable.");
+        if (!string.IsNullOrWhiteSpace(update.Sha256))
+        {
+            stream.Position = 0;
+            var actual = Convert.ToHexString(SHA256.HashData(stream));
+            if (!string.Equals(actual, update.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("The copied Version 3 portable executable failed its SHA-256 check.");
+        }
+    }
+
     private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
 
     private static void CleanupUpdateTemps()
@@ -728,13 +838,85 @@ public static class UpdateService
             }
         }
 
-        var exe = ExePath ?? throw new InvalidOperationException("Cannot locate the running program.");
-        var old = OldPath;
-        try { if (File.Exists(old)) File.Delete(old); } catch { }
-        File.Move(exe, old);
-        try { File.Move(newFile, exe); }
-        catch { try { File.Move(old, exe); } catch { } throw; }
+        if (IsPlatformMigration(update))
+        {
+            var exe = ExePath ?? throw new InvalidOperationException("Cannot locate the running legacy executable.");
+            var replacement = exe + ".v3.new";
+            var old = OldPath;
+
+            // Preferred path: replace the running legacy EXE with the verified portable launcher. Existing shortcuts
+            // and the original portable folder keep working, and no installer or registry setup is involved.
+            if (CanSelfUpdate(out _))
+            {
+                var movedOldAside = false;
+                try
+                {
+                    TryDelete(replacement);
+                    File.Copy(newFile, replacement, true);
+                    VerifyPortableCopy(replacement, update);
+                    TryDelete(old);
+                    File.Move(exe, old);
+                    movedOldAside = true;
+                    try { File.Move(replacement, exe); }
+                    catch
+                    {
+                        if (movedOldAside && !File.Exists(exe) && File.Exists(old)) File.Move(old, exe);
+                        throw;
+                    }
+
+                    BackgroundUpdateService.ClearPendingMarker();
+                    TryDelete(MigrationMarkerPath);
+                    var started = Process.Start(new ProcessStartInfo(exe)
+                    {
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.GetDirectoryName(exe)!
+                    });
+                    if (started is null) throw new InvalidOperationException("Windows could not start the PDF Studio 3 portable app.");
+                    if (!string.Equals(Path.GetFullPath(newFile), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase)) TryDelete(newFile);
+                    return;
+                }
+                catch
+                {
+                    TryDelete(replacement);
+                    // If the second rename failed, restore the legacy file before trying the user-local fallback.
+                    if (movedOldAside && File.Exists(old) && !File.Exists(exe))
+                    {
+                        try { File.Move(old, exe); } catch { }
+                    }
+                    // Continue into the fallback below; this is intentional for protected folders and antivirus locks.
+                }
+            }
+
+            // Fallback: keep the legacy file untouched, save the portable app under LocalAppData, and launch it.
+            // Program.Main redirects the old shortcut to this copy on later launches; no admin rights are required.
+            Directory.CreateDirectory(PortableRoot);
+            var fallbackTemp = PortableFallbackPath + ".new";
+            TryDelete(fallbackTemp);
+            File.Copy(newFile, fallbackTemp, true);
+            VerifyPortableCopy(fallbackTemp, update);
+            File.Move(fallbackTemp, PortableFallbackPath, true);
+            var fallbackStarted = Process.Start(new ProcessStartInfo(PortableFallbackPath)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = PortableRoot
+            });
+            if (fallbackStarted is null) throw new InvalidOperationException("Windows could not start the portable PDF Studio 3 app.");
+            Directory.CreateDirectory(Path.GetDirectoryName(MigrationMarkerPath)!);
+            File.WriteAllText(MigrationMarkerPath, update.Version + Environment.NewLine);
+            BackgroundUpdateService.ClearPendingMarker();
+            if (!string.Equals(Path.GetFullPath(newFile), Path.GetFullPath(PortableFallbackPath), StringComparison.OrdinalIgnoreCase)) TryDelete(newFile);
+            return;
+        }
+
+        // Keep the regular same-platform updater variables distinct from the migration branch above.
+        // C# forbids reusing a child-scope local name in the enclosing method's local declaration space.
+        var currentExe = ExePath ?? throw new InvalidOperationException("Cannot locate the running program.");
+        var currentOld = OldPath;
+        try { if (File.Exists(currentOld)) File.Delete(currentOld); } catch { }
+        File.Move(currentExe, currentOld);
+        try { File.Move(newFile, currentExe); }
+        catch { try { File.Move(currentOld, currentExe); } catch { } throw; }
         BackgroundUpdateService.ClearPendingMarker();
-        Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe)! });
+        Process.Start(new ProcessStartInfo(currentExe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(currentExe)! });
     }
 }

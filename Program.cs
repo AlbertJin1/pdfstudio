@@ -13,6 +13,10 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // If a protected legacy install could not replace its own EXE during the V3 migration, route the old
+        // shortcut to the verified user-local portable build instead of reopening the obsolete C# UI.
+        if (UpdateService.TryLaunchPortableMigration()) return;
+
         UpdateService.CleanupLeftovers();   // removes old updater leftovers without discarding a postponed update
         BackgroundUpdateService.Initialize(); // restore a verified update, if the user chose Update later
         ApplicationConfiguration.Initialize();

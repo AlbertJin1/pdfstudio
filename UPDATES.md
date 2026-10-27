@@ -19,6 +19,12 @@ a completed staged update is checked again on the next launch before the user is
 No GitHub, no tokens, nothing to configure: the updater uses the same server address and API key as the usage statistics
 (`UsageTracker.DefaultBaseUrl` / `DefaultApiKey`, or `monitor_url` / `monitor_key` in settings.txt).
 
+## V2 → V3 portable migration
+
+When the Monitor offers a Version 3 release, this patched V2 source prefers the published compressed ZIP package, verifies the ZIP checksum, extracts only `PdfStudio.exe`, and checks the final portable launcher against the release EXE size and SHA-256. If ZIP metadata is unavailable or extraction fails, it safely falls back to the checksum-verified raw EXE. This behavior applies only to V2 executables built from this source; already-installed 2.8.15 binaries cannot gain it without a differently versioned bridge release. Content-defined delta updates are deliberately reserved for same-platform updates. A V2 → V3 transition must download the target executable once because C# V2 chunks do not match the Electron launcher. After a V3 client installs the new updater, later V3 releases can use differential chunks, with compressed ZIP and raw EXE fallbacks.
+
+The Monitor rollout is bridge-first: clients below `2.8.15` are offered the exact `2.8.15` bridge rather than V3; clients at `2.8.15` or later can receive V3+. Keep the `2.8.15` release artifact on the Monitor before publishing V3.
+
 ## Shipping an update
 
 1. Raise `<Version>` **and** `<FileVersion>` in `PdfStudioCS.csproj` to the same number (e.g. `2.7.0` / `2.7.0.0`) and add the

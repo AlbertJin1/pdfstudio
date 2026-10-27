@@ -20,7 +20,7 @@ public sealed record BackgroundUpdateSnapshot(
 /// </summary>
 public static class BackgroundUpdateService
 {
-    private sealed record PendingUpdateRecord(UpdateInfo Update, DateTime CompletedUtc);
+    private sealed record PendingUpdateRecord(UpdateInfo Update, DateTime CompletedUtc, string? DownloadedPath = null);
 
     private static readonly object Sync = new();
     private static readonly SemaphoreSlim DownloadGate = new(1, 1);
@@ -82,7 +82,7 @@ public static class BackgroundUpdateService
             TryDelete(MetadataPath);
             TryDelete(UpdateService.StagedPath);
             next = new BackgroundUpdateSnapshot(BackgroundUpdateStatus.Downloading, update, null,
-                new UpdateProgress(0, 0, update.DownloadSize, UpdatePhase.Downloading, "Starting the background download…"));
+                new UpdateProgress(0, 0, UpdateService.IsPlatformMigration(update) ? update.Size : update.DownloadSize, UpdatePhase.Downloading, "Starting the background download…"));
             current = next;
         }
         Notify(next);
@@ -114,7 +114,7 @@ public static class BackgroundUpdateService
             var path = await UpdateService.DownloadAsync(update, progress, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
 
-            var record = new PendingUpdateRecord(update, DateTime.UtcNow);
+            var record = new PendingUpdateRecord(update, DateTime.UtcNow, path);
             Directory.CreateDirectory(Path.GetDirectoryName(MetadataPath)!);
             var temp = MetadataPath + ".tmp";
             await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(record), token).ConfigureAwait(false);
@@ -224,9 +224,18 @@ public static class BackgroundUpdateService
         path = UpdateService.StagedPath;
         try
         {
-            if (!File.Exists(MetadataPath) || !File.Exists(path)) return false;
+            if (!File.Exists(MetadataPath)) return false;
             var record = JsonSerializer.Deserialize<PendingUpdateRecord>(File.ReadAllText(MetadataPath));
             if (record?.Update is not { } candidate || string.IsNullOrWhiteSpace(candidate.Version)) return false;
+            var expectedPath = UpdateService.IsPlatformMigration(candidate)
+                ? UpdateService.MigrationPortablePath(candidate.Version)
+                : UpdateService.StagedPath;
+            // Only restore from the well-known staging location for the given update type; do not trust arbitrary
+            // local paths from the persisted marker. Older marker files without DownloadedPath remain compatible.
+            var storedPath = string.IsNullOrWhiteSpace(record.DownloadedPath) ? expectedPath : record.DownloadedPath!;
+            if (!string.Equals(Path.GetFullPath(storedPath), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase)) return false;
+            path = expectedPath;
+            if (!File.Exists(path)) return false;
             if (candidate.Size > 0 && new FileInfo(path).Length != candidate.Size) return false;
             using (var stream = File.OpenRead(path))
             {

@@ -21,6 +21,15 @@ public static class ChangeLog
     /// <summary>Newest first.</summary>
     public static IReadOnlyList<ReleaseNotes> Releases { get; } = new ReleaseNotes[]
     {
+        new("2.8.15", new DateOnly(2026, 10, 25), "Prepare a safe migration from the legacy C# app to the portable PDF Studio 3 app.", new ChangeGroup[]
+        {
+            new ChangeGroup(ChangeKind.Fixed, new[]
+            {
+                "Major-version migrations download and verify the standalone PDF Studio 3 portable EXE; it replaces PdfStudio.exe when writable or launches a user-local fallback without an installer.",
+                "Protected legacy folders use a user-local portable fallback without administrator rights.",
+                "The download dialog explains portable migration and no-install behavior."
+            })
+        }),
         new("2.8.14", new DateOnly(2026, 10, 15), "Rebuilt the Export PDF window with segmented tabs, one alignment grid, themed fields and toggle switches.", new ChangeGroup[]
         {
             new ChangeGroup(ChangeKind.Changed, new[]

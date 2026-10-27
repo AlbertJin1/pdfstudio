@@ -29,7 +29,8 @@ public sealed class UpdateDialog : Form
     {
         this.update = update;
         AutoScaleMode = AutoScaleMode.None;          // sizes are scaled once with Theme.S
-        Text = "PDF Studio update";
+        var migration = UpdateService.IsPlatformMigration(update);
+        Text = migration ? "Upgrade to PDF Studio 3" : "PDF Studio update";
         Font = Theme.Ui();
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; KeyPreview = true;
@@ -42,7 +43,7 @@ public sealed class UpdateDialog : Form
         status.Margin = new Padding(0, 0, S(12), 0);
         skip = new FlatButton { Text = "Skip this version", Kind = BtnKind.Secondary, Height = S(40), AutoWidth = true, MinWidth = 140, Margin = new Padding(S(4), 0, 0, 0), Anchor = AnchorStyles.None };
         later = new FlatButton { Text = "Later", Kind = BtnKind.Secondary, Height = S(40), AutoWidth = true, MinWidth = 96, Margin = new Padding(S(4), 0, 0, 0), Anchor = AnchorStyles.None };
-        install = new FlatButton { Text = "Update now", Glyph = "\uE896", Kind = BtnKind.Primary, Height = S(40), AutoWidth = true, MinWidth = 150, Margin = new Padding(S(8), 0, 0, 0), Anchor = AnchorStyles.None };
+        install = new FlatButton { Text = migration ? "Get portable app" : "Update now", Glyph = "\uE896", Kind = BtnKind.Primary, Height = S(40), AutoWidth = true, MinWidth = migration ? 156 : 150, Margin = new Padding(S(8), 0, 0, 0), Anchor = AnchorStyles.None };
         skip.FitNow(); later.FitNow(); install.FitNow();
         skip.Click += (_, _) => { SkipRequested = true; Close(); };
         later.Click += (_, _) => { if (busy) cts?.Cancel(); else Close(); };      // while downloading, "Later" becomes "Cancel"
@@ -69,7 +70,7 @@ public sealed class UpdateDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(22)));    // "12.3 of 28.9 MB · 42% · 2.1 MB/s · 8 s left"
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));    // progress bar
 
-        layout.Controls.Add(new UpdateHero("A new version is available", DownloadSubtitle(), UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
+        layout.Controls.Add(new UpdateHero(migration ? "Move to PDF Studio 3" : "A new version is available", DownloadSubtitle(), UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
 
         var parsed = UpdateNotes.Parse(update.Notes);
         var whatsNew = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0) };
@@ -99,10 +100,15 @@ public sealed class UpdateDialog : Form
     private async Task InstallAsync()
     {
         if (busy) return;
-        if (!UpdateService.CanSelfUpdate(out var why))
+        // Version 3 is a portable Electron EXE. It is staged under LocalAppData first, so protected folders
+        // can use the safe fallback without needing an installer or writing beside the legacy executable.
+        if (!UpdateService.IsPlatformMigration(update))
         {
-            MessageBox.Show(this, why, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            if (!UpdateService.CanSelfUpdate(out var why))
+            {
+                MessageBox.Show(this, why, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
         }
         SetBusy(true);
         cts = new CancellationTokenSource();
@@ -181,12 +187,14 @@ public sealed class UpdateDialog : Form
 
     private string DownloadSubtitle()
     {
-        if (update.DeltaSupported) return $"PDF Studio {update.Version} is ready to install  ·  smart update reuses unchanged parts";
-        return $"PDF Studio {update.Version} is ready to install  ·  {UpdateService.FormatSize(update.DownloadSize)} download";
+        if (UpdateService.IsPlatformMigration(update)) return $"PDF Studio 3 portable app  ·  {UpdateService.FormatSize(update.Size)} download";
+        if (update.DeltaSupported) return $"PDF Studio {update.Version} is ready to update  ·  smart update reuses unchanged parts";
+        return $"PDF Studio {update.Version} is ready to update  ·  {UpdateService.FormatSize(update.DownloadSize)} download";
     }
 
     private string DownloadSizeText()
     {
+        if (UpdateService.IsPlatformMigration(update)) return "Verified portable EXE · " + UpdateService.FormatSize(update.Size) + " · no installation is required.";
         if (update.DeltaSupported) return "Smart update: unchanged parts are reused; only changed parts are downloaded.";
         if (update.DownloadSize <= 0) return "";
         var text = "Download size: " + UpdateService.FormatSize(update.DownloadSize);

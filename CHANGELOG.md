@@ -1,4 +1,30 @@
+## [3.0.0] - 2026-10-25
+
+_Portable cross-platform desktop release._
+
+### Added
+- Rebuilt PDF Studio as a cross-platform Electron app with a Windows portable EXE, a macOS ZIP containing the app bundle, and a Linux AppImage.
+- Added a no-install Version 3 migration path through the existing Monitor update channel, so compatible C# clients can download a standalone portable launcher.
+- Added a local-data strategy for portable builds: store app data alongside a writable portable launcher and fall back to per-user application data when the executable folder is read-only.
+
+### Changed
+- Refreshed Version 3 navigation and page management with an always-visible Add PDF / Image tile, clearer drag targets and precise move controls.
+- Removed installer targets from the Version 3 release process. Windows builds publish only the portable executable.
+
+### Fixed
+- Legacy updater staging now verifies the portable EXE with size and SHA-256 before replacing the current executable or launching the protected-folder fallback.
+
 # Changelog
+
+## [2.8.15] - 2026-10-25
+
+_Portable-app migration bridge for PDF Studio 3._
+
+### Fixed
+- Fixed CS0136 build errors in `UpdateService.ApplyAndRestart` by giving the regular same-platform update path distinct local names (`currentExe` and `currentOld`); update behavior is unchanged.
+- Major-version updates download the raw Version 3 portable EXE under LocalAppData and verify its size and SHA-256 before launch or replacement.
+- When the legacy EXE folder is writable, the portable launcher replaces it so existing shortcuts continue to work; when protected, the updater falls back to a user-local portable copy and redirects subsequent launches.
+- The update dialog clearly explains that Version 3 is a portable app and does not require setup or administrator permission.
 
 ## [2.8.14] - 2026-10-15
 

@@ -44,9 +44,11 @@ public sealed class UpdateDownloadDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(34)));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(30)));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var subtitle = update.DeltaSupported
-            ? "A compact update is being prepared and downloaded securely."
-            : $"PDF Studio {update.Version} · {UpdateService.FormatSize(update.DownloadSize)} download";
+        var subtitle = UpdateService.IsPlatformMigration(update)
+            ? $"Portable PDF Studio {update.Version} · {UpdateService.FormatSize(update.Size)} download"
+            : update.DeltaSupported
+                ? "A compact update is being prepared and downloaded securely."
+                : $"PDF Studio {update.Version} · {UpdateService.FormatSize(update.DownloadSize)} download";
         layout.Controls.Add(new UpdateHero("Downloading update in the background", subtitle, UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
         stateText.Margin = new Padding(0, S(4), 0, 0);
         detailText.Margin = new Padding(0, S(2), 0, 0);
@@ -118,7 +120,9 @@ public sealed class UpdateDownloadDialog : Form
                 break;
             case BackgroundUpdateStatus.Ready:
                 stateText.Text = "Update downloaded and verified";
-                detailText.Text = "The update is ready. PDF Studio will not restart until you choose Update now.";
+                detailText.Text = snapshot.Update is { } readyUpdate && UpdateService.IsPlatformMigration(readyUpdate)
+                    ? "The portable app is ready. PDF Studio will launch it only after you confirm."
+                    : "The update is ready. PDF Studio will not restart until you choose Update now.";
                 progress.Value = progress.Maximum;
                 break;
         }
@@ -146,7 +150,8 @@ public sealed class UpdateReadyDialog : Form
     public UpdateReadyDialog(UpdateInfo update)
     {
         AutoScaleMode = AutoScaleMode.None;
-        Text = "PDF Studio update ready";
+        var migration = UpdateService.IsPlatformMigration(update);
+        Text = migration ? "Upgrade to PDF Studio 3" : "PDF Studio update ready";
         Font = Theme.Ui();
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
@@ -162,7 +167,7 @@ public sealed class UpdateReadyDialog : Form
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         later = new FlatButton { Text = "Update later", Kind = BtnKind.Secondary, Height = S(42), AutoWidth = true, MinWidth = 122, Margin = new Padding(S(6), 0, 0, 0) };
-        updateNow = new FlatButton { Text = "Update now", Glyph = "\uE896", Kind = BtnKind.Primary, Height = S(42), AutoWidth = true, MinWidth = 144, Margin = new Padding(S(8), 0, 0, 0) };
+        updateNow = new FlatButton { Text = migration ? "Open portable app" : "Update now", Glyph = "\uE896", Kind = BtnKind.Primary, Height = S(42), AutoWidth = true, MinWidth = migration ? 156 : 144, Margin = new Padding(S(8), 0, 0, 0) };
         later.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         updateNow.Click += (_, _) => { DialogResult = DialogResult.OK; Close(); };
         actions.Controls.Add(later, 1, 0); actions.Controls.Add(updateNow, 2, 0);
@@ -177,8 +182,8 @@ public sealed class UpdateReadyDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(44)));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, S(26)));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(new UpdateHero("Your update is ready", $"PDF Studio {update.Version} has been downloaded and verified.", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
-        var intro = new Txt("Choose when to restart. Nothing will be installed until you select Update now.", 9.5f, FontStyle.Regular, true)
+        layout.Controls.Add(new UpdateHero(migration ? "Your desktop upgrade is ready" : "Your update is ready", migration ? $"PDF Studio {update.Version} has been downloaded and verified." : $"PDF Studio {update.Version} has been downloaded and verified.", UpdateService.CurrentVersion, update.Version) { Dock = DockStyle.Fill }, 0, 0);
+        var intro = new Txt(migration ? "This launches the verified portable Version 3 app. No setup program or administrator permission is required. If the legacy folder is protected, a user-local portable copy is used." : "Choose when to restart. Nothing will change until you select Update now.", 9.5f, FontStyle.Regular, true)
         { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
         layout.Controls.Add(intro, 0, 1);
         layout.Controls.Add(new Txt("WHAT'S NEW", 9f, FontStyle.Bold, true) { Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);

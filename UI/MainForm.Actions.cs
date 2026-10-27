@@ -908,7 +908,13 @@ public sealed partial class MainForm
 
             if (result.Update is not { } update)
             {
-                if (manual) MessageBox.Show(this, $"You are running the latest version ({UpdateService.CurrentVersion}).", "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (manual)
+                {
+                    var message = UpdateService.IsPlatformMigrationInstalled
+                        ? "The portable PDF Studio 3 app is already available. Open it from your existing PDF Studio shortcut; this legacy launcher redirects to the portable copy."
+                        : $"You are running the latest version ({UpdateService.CurrentVersion}).";
+                    MessageBox.Show(this, message, "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
                 return;
             }
 
@@ -1019,19 +1025,27 @@ public sealed partial class MainForm
             return;
         }
 
-        if (!UpdateService.CanSelfUpdate(out var reason))
+        if (!UpdateService.IsPlatformMigration(update))
         {
-            MessageBox.Show(this, reason, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return; // keep the downloaded update so it can still be applied manually
+            if (!UpdateService.CanSelfUpdate(out var reason))
+            {
+                MessageBox.Show(this, reason, "PDF Studio update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return; // keep the downloaded update so it can still be applied manually
+            }
         }
 
-        if (dirty && pages.Count > 0 &&
-            MessageBox.Show(this,
-                "PDF Studio needs to restart to finish the update. You have page changes that have not been exported. Restart and lose those unsaved changes?",
-                "Update PDF Studio", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        if (dirty && pages.Count > 0)
         {
-            SetStatus($"Update postponed. PDF Studio {update.Version} remains downloaded and ready.");
-            return; // Update later must not discard the downloaded payload.
+            var migration = UpdateService.IsPlatformMigration(update);
+            var message = migration
+                ? "PDF Studio will launch the portable Version 3 app and close this legacy window. You have page changes that have not been exported. Continue and lose those unsaved changes?"
+                : "PDF Studio needs to restart to finish the update. You have page changes that have not been exported. Restart and lose those unsaved changes?";
+            if (MessageBox.Show(this, message, migration ? "Upgrade PDF Studio" : "Update PDF Studio",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                SetStatus($"Update postponed. PDF Studio {update.Version} remains downloaded and ready.");
+                return; // Update later must not discard the downloaded payload.
+            }
         }
 
         try
