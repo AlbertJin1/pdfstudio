@@ -1,37 +1,82 @@
 @echo off
-setlocal EnableExtensions
-REM PDF Studio - build the release exe and get it ready to upload to the monitor's "Releases" page.
-REM Usage:   release.bat
-REM          Builds the exe, then uploads it to the monitor through ngrok together with this version's CHANGELOG.md notes
-REM          (publish_to_monitor.ps1). NEW version = uploaded; same version but a changed exe = overwritten; identical = skipped.
-REM          release.bat noupload   builds only.     release.bat -Force   uploads even if the monitor has the identical exe.
-REM          The monitor reads the version out of the exe itself; installed copies offer the update on their next start.
+setlocal EnableExtensions EnableDelayedExpansion
+REM PDF Studio - build the bridge release and publish it through the Monitor API.
+REM Usage: release.bat [auto|public|local] [-Force] [-NoZip]
+REM        release.bat noupload
+REM auto uses the LAN Monitor first, then falls back to the configured/public endpoint if the LAN is unavailable.
+REM public uses the configured public Monitor URL; local bypasses zrok and posts to the Monitor host on the LAN.
 
 set "MONITOR=https://pdfstudio.shares.zrok.io/pdfstudio-monitor/releases.php"
+set "TARGET="
+set "EXTRA_ARGS="
+set "NOUPLOAD=0"
+for %%A in (%*) do (
+    if /i "%%~A"=="auto" set "TARGET=auto"
+    if /i "%%~A"=="public" set "TARGET=public"
+    if /i "%%~A"=="local" set "TARGET=local"
+    if /i "%%~A"=="-Force" set "EXTRA_ARGS=!EXTRA_ARGS! -Force"
+    if /i "%%~A"=="-NoZip" set "EXTRA_ARGS=!EXTRA_ARGS! -NoZip"
+    if /i "%%~A"=="noupload" set "NOUPLOAD=1"
+)
 cd /d "%~dp0"
 
 call "%~dp0build_publish.bat"
 if errorlevel 1 exit /b 1
 
 echo.
-powershell -NoProfile -Command "$e=(Get-Item 'publish\PdfStudio.exe').VersionInfo; $p=([xml](Get-Content -Raw 'PdfStudioCS.csproj')).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1; Write-Host ('Version inside the exe : ' + $e.FileVersion + '   (this is what the monitor will read)'); Write-Host ('<Version> in csproj    : ' + $p); if (([version]$e.FileVersion).ToString(3) -ne ([version]$p).ToString(3)) { Write-Host 'WARNING: they differ. Set <Version> and <FileVersion> to the same number in PdfStudioCS.csproj and build again.' -ForegroundColor Yellow }"
+if not exist "%~dp0publish\PdfStudio.exe" (
+    echo ERROR: Build succeeded but publish\PdfStudio.exe was not found.
+    exit /b 1
+)
+set "PDFSTUDIO_RELEASE_EXE=%~dp0publish\PdfStudio.exe"
+set "PDFSTUDIO_RELEASE_PROJECT=%~dp0PdfStudioCS.csproj"
+set "PDFSTUDIO_RELEASE_CHANGELOG=%~dp0CHANGELOG.md"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop'; try { $exe=Get-Item -LiteralPath $env:PDFSTUDIO_RELEASE_EXE; $info=$exe.VersionInfo; $project=[xml](Get-Content -Raw -LiteralPath $env:PDFSTUDIO_RELEASE_PROJECT); $groups=@($project.Project.PropertyGroup); $pv=[string](($groups | Where-Object { $_.Version } | Select-Object -First 1).Version); $verMatch=[regex]::Match([string]$info.FileVersion,'^\s*(\d+\.\d+\.\d+)(?:\.\d+)?\s*$'); if(-not $verMatch.Success){ throw ('Invalid EXE FileVersion: ' + $info.FileVersion) }; $ver=$verMatch.Groups[1].Value; Write-Host ('Product name           : ' + $info.ProductName); Write-Host ('Version inside EXE     : ' + $ver); Write-Host ('<Version> in csproj    : ' + $pv); if($info.ProductName -ne 'PDF Studio'){ throw ('ProductName must be PDF Studio; found ' + $info.ProductName) }; if([string]::IsNullOrWhiteSpace($pv) -or $ver -ne ([version]$pv).ToString(3)){ throw 'EXE and csproj versions differ. Do not publish this build.' }; $log=Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PDFSTUDIO_RELEASE_CHANGELOG; if($log -notmatch ('(?m)^##\s+\[\s*' + [regex]::Escape($ver) + '\s*\]')){ throw ('CHANGELOG.md has no release heading for ' + $ver) }; exit 0 } catch { Write-Host ('ERROR: Release validation failed: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
+if errorlevel 1 (
+    set "PDFSTUDIO_RELEASE_EXE="
+    set "PDFSTUDIO_RELEASE_PROJECT="
+    set "PDFSTUDIO_RELEASE_CHANGELOG="
+    echo ERROR: The release was NOT uploaded because metadata validation failed.
+    exit /b 1
+)
+set "PDFSTUDIO_RELEASE_EXE="
+set "PDFSTUDIO_RELEASE_PROJECT="
+set "PDFSTUDIO_RELEASE_CHANGELOG="
 
 echo.
-if /i "%~1"=="noupload" (
-    echo Skipping the upload ^(noupload^). Upload %~dp0publish\PdfStudio.exe at %MONITOR% yourself.
+if "%NOUPLOAD%"=="1" (
+    echo Skipping the upload ^(noupload^). Built file: %~dp0publish\PdfStudio.exe
     explorer /select,"%~dp0publish\PdfStudio.exe"
     exit /b 0
 )
 
+if not defined TARGET (
+    echo ============================================================
+    echo Choose the PDF Studio Monitor upload route:
+    echo   1. Public zrok URL
+    echo   2. Local Monitor - http://192.168.254.110:8080/pdfstudio-monitor
+    echo   3. Automatic - local first, then public fallback ^(recommended^)
+    echo ============================================================
+    set /p "CHOICE=Choose 1, 2, or 3 [3]: "
+    if "!CHOICE!"=="1" set "TARGET=public"
+    if "!CHOICE!"=="2" set "TARGET=local"
+    if "!CHOICE!"=="3" set "TARGET=auto"
+    if not defined TARGET set "TARGET=auto"
+)
+
+echo.
 echo ============================================================
-echo Uploading to the PDF Studio Monitor ^(with the release notes from CHANGELOG.md^)...
+echo Uploading to PDF Studio Monitor using target: !TARGET!
 echo ============================================================
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish_to_monitor.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish_to_monitor.ps1" -Target "!TARGET!" !EXTRA_ARGS!
 if errorlevel 1 (
     echo.
-    echo The exe was built but NOT uploaded. Check that serve.bat and ngrok are running, then run:
-    echo     powershell -ExecutionPolicy Bypass -File publish_to_monitor.ps1
-    echo or upload %~dp0publish\PdfStudio.exe by hand at %MONITOR%
+    echo The exe was built but NOT uploaded.
+    echo If the public endpoint returned HTTP 403, run:
+    echo     powershell -ExecutionPolicy Bypass -File publish_to_monitor.ps1 -Target local
+    echo Ensure serve.bat is running on 192.168.254.110:8080 and the Monitor API key is configured.
+    echo Or upload %~dp0publish\PdfStudio.exe by hand at %MONITOR%
     explorer /select,"%~dp0publish\PdfStudio.exe"
     pause
     exit /b 1

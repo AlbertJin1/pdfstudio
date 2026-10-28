@@ -55,3 +55,6 @@ release-notes.md
 *.p12
 signing/signing.config.bat
 signing/*.cer
+
+# Local release-publishing credential (never commit or distribute)
+monitor-key.txt
